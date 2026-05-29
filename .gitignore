@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Runtime project state (uploaded per session; not source)
+project/sim_config.yaml
+project/devices/*.csv
+project/**/.config_locked
+.config_locked
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

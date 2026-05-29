@@ -1,0 +1,5 @@
+# 3.13 introduced the SimData/SimDevice model with the per-request `action`
+# callback this engine integrates with; earlier 3.x lacks that API.
+pymodbus>=3.13.0
+flask>=3.0.0
+pyyaml>=6.0
