@@ -64,6 +64,7 @@
 
     const state = r.data.state;
     if (state === App.view) return;          // no transition; views self-refresh
+    if (App.view === "RUNNING" && window.Runtime) window.Runtime.leave();
     App.view = state;
     if (state === "SETUP") { showView("setup"); window.Setup.enter(); }
     else if (state === "RUNNING") { showView("runtime"); window.Runtime.enter(); }

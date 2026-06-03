@@ -20,8 +20,10 @@ import sys
 import threading
 from pathlib import Path
 
+from . import config_loader
 from .api_server import create_app
-from .state_machine import LOCK_FILENAME, StateMachine
+from .network_manager import NetworkManager
+from .state_machine import CONFIG_FILENAME, LOCK_FILENAME, StateMachine
 
 DEFAULT_PROJECT_DIR = "./project"
 DEFAULT_PORT = 5000
@@ -40,7 +42,28 @@ def parse_args(argv=None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def enforce_lock(project_dir: Path, reset: bool) -> None:
+def _teardown_old_network(project_dir: Path) -> None:
+    """Read the locked config and tear down any interfaces it created.
+
+    Called before wiping the project directory on --reset, so that a crash
+    followed by a restart with --reset leaves the kernel network state clean.
+    Silently skipped if the config file is missing or unparseable.
+    """
+    config_file = project_dir / CONFIG_FILENAME
+    if not config_file.exists():
+        return
+    try:
+        text = config_file.read_text(encoding="utf-8")
+        cfg, errors = config_loader.load_and_validate(text)
+        if errors or cfg is None:
+            return
+        NetworkManager(cfg).teardown()
+        print("--reset: removed network interfaces from previous run.")
+    except Exception:
+        pass
+
+
+def enforce_lock(project_dir: Path, reset: bool, manage_network: bool = True) -> None:
     """Refuse to start if a locked config exists (snapshot-revert workflow, §3)."""
     lock = project_dir / LOCK_FILENAME
     if lock.exists():
@@ -54,6 +77,10 @@ def enforce_lock(project_dir: Path, reset: bool) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        # Tear down old network interfaces before wiping files, so that
+        # a crash + --reset restart leaves the kernel state clean.
+        if manage_network:
+            _teardown_old_network(project_dir)
         # --reset: wipe the project directory back to empty.
         for child in project_dir.iterdir():
             if child.is_dir():
@@ -109,7 +136,7 @@ def main(argv=None) -> None:
     project_dir = Path(args.config)
     project_dir.mkdir(parents=True, exist_ok=True)
 
-    enforce_lock(project_dir, args.reset)
+    enforce_lock(project_dir, args.reset, manage_network=not args.no_network)
 
     engine = StateMachine(
         project_dir,

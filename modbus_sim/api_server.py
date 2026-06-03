@@ -174,4 +174,8 @@ def create_app(engine: StateMachine, headless: bool = False) -> Flask:
     def stop():
         return jsonify(engine.stop())
 
+    @app.post("/api/reset")
+    def reset():
+        return jsonify(engine.reset())
+
     return app

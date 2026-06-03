@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -416,6 +417,57 @@ class StateMachine:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
+    # ------------------------------------------------------------------ reset
+    def reset(self) -> dict:
+        """Stop simulation, tear down network, clear disk + memory, return to SETUP.
+        The process stays alive. Requires RUNNING state.
+        """
+        with self._lock:
+            self._require(RUNNING)
+            self.state = STOPPING
+
+        # Stop Modbus servers and the asyncio loop (same sequence as stop()).
+        if self._loop is not None and self._loop.is_running():
+            try:
+                fut = asyncio.run_coroutine_threadsafe(self._servers.stop(), self._loop)
+                fut.result(timeout=5)
+            except Exception:
+                pass
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            if self._loop_thread is not None:
+                self._loop_thread.join(timeout=2)
+
+        # Network teardown.
+        if self.manage_network and self._network is not None:
+            self._network.teardown()
+
+        # Delete persisted files.
+        for fname in (LOCK_FILENAME, CONFIG_FILENAME):
+            try:
+                (self.project_dir / fname).unlink(missing_ok=True)
+            except Exception:
+                pass
+        try:
+            if self.devices_dir.exists():
+                shutil.rmtree(self.devices_dir)
+        except Exception:
+            pass
+
+        # Reset in-memory state.
+        self.config = None
+        self.config_locked = False
+        self.started_at = None
+        self._signals = {}
+        self._regmaps = {}
+        self._servers = ModbusServerManager()
+        self._network = None
+        self._loop = None
+        self._loop_thread = None
+        self._serve_future = None
+
+        self.state = SETUP
+        return {"ok": True, "message": "Engine reset to SETUP"}
+
     # ------------------------------------------------------------------- stop
     def stop(self) -> dict:
         self.state = STOPPING
@@ -426,6 +478,8 @@ class StateMachine:
             except Exception:
                 pass
             self._loop.call_soon_threadsafe(self._loop.stop)
+        if self.manage_network and self._network is not None:
+            self._network.teardown()
         if self._on_stop is not None:
             self._on_stop()
         return {"ok": True, "message": "Engine shutting down"}

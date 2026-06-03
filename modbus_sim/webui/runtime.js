@@ -11,10 +11,21 @@
     trafficInterface: "",
     valueTimer: null,
     enter,
+    leave,
     selectDevice,
     reloadSelected,
   };
   window.Runtime = Runtime;
+
+  function leave() {
+    if (Runtime.valueTimer) {
+      clearInterval(Runtime.valueTimer);
+      Runtime.valueTimer = null;
+    }
+    Runtime.devices = [];
+    Runtime.selected = null;
+    Runtime.signals = [];
+  }
 
   async function enter() {
     const cfg = await App.getJSON("/api/config");
@@ -39,6 +50,20 @@
     document.getElementById("rt-stop").onclick = async () => {
       if (!confirm("Stop the engine? It will exit (and restart in SETUP under systemd).")) return;
       await App.postJSON("/api/stop"); App.toast("Stopping engine…", "warning");
+    };
+    document.getElementById("rt-reset").onclick = async () => {
+      if (!confirm(
+        "Reset the engine to SETUP?\n\n" +
+        "This will stop all Modbus servers, remove network interfaces, " +
+        "and delete the current configuration so a new one can be uploaded.\n\n" +
+        "The process will NOT restart."
+      )) return;
+      const r = await App.postJSON("/api/reset");
+      if (r.ok) {
+        App.toast("Engine reset to SETUP — upload a new config to continue", "warning");
+      } else {
+        App.toast((r.data && r.data.error) || "Reset failed", "danger");
+      }
     };
     document.getElementById("rt-dev-simulate").onclick = async () => {
       await App.postJSON(`/api/devices/${enc(Runtime.selected)}/simulate`);

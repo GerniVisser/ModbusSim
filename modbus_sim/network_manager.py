@@ -51,7 +51,7 @@ class NetworkManager:
             target = self._target_interface(dev)
             cidr = f"{dev.ip}/{dev.prefix_length}"
             self._assign_ip(cidr, target)
-            self._assigned_ips.append({"ip": dev.ip, "interface": target})
+            self._assigned_ips.append({"ip": dev.ip, "interface": target, "prefix_length": dev.prefix_length})
 
     # ------------------------------------------------------------- internals
     def _unique_vlans(self) -> list[int]:
@@ -103,6 +103,30 @@ class NetworkManager:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(self._error(" ".join(cmd), result))
+
+    def teardown(self) -> None:
+        """Remove IPs and VLAN subinterfaces created by setup(). Best-effort:
+        errors are suppressed so a partial failure never aborts a reset."""
+        for entry in reversed(self._assigned_ips):
+            try:
+                subprocess.run(
+                    ["ip", "addr", "del", f"{entry['ip']}/{entry['prefix_length']}", "dev", entry["interface"]],
+                    capture_output=True, text=True,
+                )
+            except Exception:
+                pass
+        self._assigned_ips.clear()
+
+        for subif in reversed(self._vlan_interfaces):
+            try:
+                subprocess.run(["ip", "link", "set", subif, "down"], capture_output=True, text=True)
+            except Exception:
+                pass
+            try:
+                subprocess.run(["ip", "link", "delete", subif], capture_output=True, text=True)
+            except Exception:
+                pass
+        self._vlan_interfaces.clear()
 
     @staticmethod
     def _error(action: str, result: subprocess.CompletedProcess) -> str:
