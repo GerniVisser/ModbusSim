@@ -22,7 +22,10 @@ client connections.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Optional
+
+_req_log = logging.getLogger("modbus.requests")
 
 from pymodbus.constants import ExcCodes
 from pymodbus.server import ModbusTcpServer
@@ -59,8 +62,11 @@ def _make_action(regmap: RegisterMap):
     """Build the async per-request bridge between pymodbus and a RegisterMap."""
 
     async def action(func_code, start_address, address, count, registers, values):
+        direction = "WRITE" if values is not None else "READ"
+        _req_log.debug("FC%02d %-5s start=%d addr=%d count=%d", func_code, direction, start_address, address, count)
         register_type = FC_TO_RT.get(func_code)
         if register_type is None:
+            _req_log.warning("FC%02d unknown function code", func_code)
             return ExcCodes.ILLEGAL_FUNCTION
 
         if func_code in BIT_FCS:
@@ -85,13 +91,16 @@ def _make_action(regmap: RegisterMap):
         # Register block: ``address`` is a register address, ``count`` a register count.
         offset = address - start_address
         if offset < 0:
+            _req_log.warning("FC%02d addr=%d out of range (block starts at %d) -> ILLEGAL_ADDRESS", func_code, address, start_address)
             return ExcCodes.ILLEGAL_ADDRESS
         if values is None:
             words = regmap.read_block(register_type, address, count)
+            _req_log.debug("FC%02d READ  addr=%d count=%d -> %s", func_code, address, count, words)
             for i, w in enumerate(words):
                 registers[offset + i] = w
         else:
             regmap.write_block(register_type, address, [int(v) for v in values])
+            _req_log.debug("FC%02d WRITE addr=%d values=%s", func_code, address, list(values))
         return None
 
     return action

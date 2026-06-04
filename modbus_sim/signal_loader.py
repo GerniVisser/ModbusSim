@@ -86,6 +86,7 @@ def parse_and_validate(csv_text: str) -> tuple[list[Signal], list[SignalError]]:
     matching how a user views the file in a spreadsheet.
     """
     errors: list[SignalError] = []
+    csv_text = csv_text.replace("\r\n", "\n").replace("\r", "\n")
     reader = csv.DictReader(io.StringIO(csv_text))
 
     if reader.fieldnames is None:

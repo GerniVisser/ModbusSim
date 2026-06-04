@@ -117,10 +117,36 @@
   <!-- Toasts -->
   <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toasts"></div>
 
+  <!-- ====================== ZENON IMPORT MODAL ====================== -->
+  <div class="modal fade" id="zenon-import-modal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Import from Zenon 15 CSV</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body pb-2">
+          <div class="d-flex justify-content-center gap-4 mb-3" style="font-size:.85rem;font-weight:600;">
+            <span class="zi-step" data-step="1" style="opacity:.45">1 &middot; Upload</span>
+            <span class="zi-step" data-step="2" style="opacity:.45">2 &middot; Configure</span>
+          </div>
+          <div id="zi-body"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    .zi-step { opacity: .45; }
+    .zi-step.active { opacity: 1; }
+    .zi-step.done { opacity: 1; color: #2ecc71; }
+  </style>
+
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="/webui/app.js"></script>
   <script src="/webui/setup.js"></script>
   <script src="/webui/runtime.js"></script>
   <script src="/webui/editor.js"></script>
+  <script src="/webui/zenon_import.js"></script>
 </body>
 </html>

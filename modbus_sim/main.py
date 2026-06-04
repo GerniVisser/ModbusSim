@@ -39,6 +39,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                              "(loopback/management) — for testing without the USB-C NIC")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Web/API port (default: 5000)")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address for the API (default: 0.0.0.0)")
+    parser.add_argument("--restore", action="store_true",
+                        help="Re-load an existing locked project from disk and go straight to RUNNING "
+                             "(crash-recovery; skips the lock-file guard)")
     return parser.parse_args(argv)
 
 
@@ -131,12 +134,54 @@ def _schedule_exit() -> None:
     threading.Timer(0.4, lambda: os._exit(0)).start()
 
 
+def _restore_from_disk(engine: StateMachine) -> None:
+    """Re-upload config + signals from the project directory and start the engine.
+
+    Used by --restore to recover after a crash or deliberate restart without
+    losing the project setup.  Raises SystemExit if any file is missing or invalid.
+    """
+    project_dir = engine.project_dir
+    config_file = project_dir / CONFIG_FILENAME
+    if not config_file.exists():
+        print(f"--restore: {config_file} not found; cannot restore.", file=sys.stderr)
+        sys.exit(1)
+
+    config_bytes = config_file.read_bytes()
+    try:
+        engine.config_locked = False  # allow upload_config to proceed
+        result = engine.upload_config(config_bytes)
+    except Exception as exc:
+        print(f"--restore: config load failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"--restore: loaded config ({result['device_count']} device(s))")
+
+    for dev in engine.config.devices:
+        sig_path = project_dir / dev.signals_file
+        if not sig_path.exists():
+            print(f"--restore: signal file {sig_path} not found; skipping.", file=sys.stderr)
+            continue
+        try:
+            engine.upload_signals(dev.id, sig_path.read_bytes())
+            print(f"--restore: loaded signals for '{dev.id}'")
+        except Exception as exc:
+            print(f"--restore: signals for '{dev.id}' failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        engine.start()
+    except Exception as exc:
+        print(f"--restore: start failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main(argv=None) -> None:
     args = parse_args(argv)
     project_dir = Path(args.config)
     project_dir.mkdir(parents=True, exist_ok=True)
 
-    enforce_lock(project_dir, args.reset, manage_network=not args.no_network)
+    if not args.restore:
+        enforce_lock(project_dir, args.reset, manage_network=not args.no_network)
 
     engine = StateMachine(
         project_dir,
@@ -154,7 +199,11 @@ def main(argv=None) -> None:
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _on_signal)
 
-    print(setup_banner(args.host, args.port, args.headless))
+    if args.restore:
+        _restore_from_disk(engine)
+    else:
+        print(setup_banner(args.host, args.port, args.headless))
+
     # threaded=True so POST /api/stop and concurrent polling work; no reloader.
     app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
 
