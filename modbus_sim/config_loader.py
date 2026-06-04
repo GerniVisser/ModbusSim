@@ -160,8 +160,8 @@ def load_and_validate(yaml_text: str) -> tuple[Optional[SimConfig], list[str]]:
             errors.append(f"{label}.port must be 1-65535 (got {port})")
 
         unit_id = _as_int(raw.get("unit_id"), f"{label}.unit_id", errors)
-        if unit_id is not None and not (1 <= unit_id <= 247):
-            errors.append(f"{label}.unit_id must be 1-247 (got {unit_id})")
+        if unit_id is not None and not (1 <= unit_id <= 255):
+            errors.append(f"{label}.unit_id must be 1-255 (got {unit_id})")
 
         signals_file = raw.get("signals_file")
         if not signals_file:
