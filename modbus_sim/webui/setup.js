@@ -39,9 +39,18 @@
         <input type="file" class="form-control" id="cfg-file" accept=".yaml,.yml">
         <button class="btn btn-primary" id="cfg-upload">Upload</button>
       </div>
-      <div id="cfg-errors" class="mt-3"></div>`;
+      <div id="cfg-errors" class="mt-3"></div>
+      <hr class="my-3">
+      <p class="text-muted small mb-2">Have a Zenon 15 Engineering Studio variable export?
+        Generate the config and signal files automatically.</p>
+      <button class="btn btn-outline-secondary btn-sm" id="zenon-import-btn">
+        &#8593; Import from Zenon CSV
+      </button>`;
     if (errors) renderErrors("cfg-errors", errors);
     document.getElementById("cfg-upload").onclick = uploadConfig;
+    document.getElementById("zenon-import-btn").onclick = () => {
+      if (window.ZenonImport) ZenonImport.open();
+    };
   }
 
   async function uploadConfig() {

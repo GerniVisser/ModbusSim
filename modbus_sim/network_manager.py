@@ -43,7 +43,7 @@ class NetworkManager:
 
         if self.is_vlan_mode:
             for vlan_id in self._unique_vlans():
-                subif = f"{iface}.{vlan_id}"
+                subif = self._vlan_subif_name(iface, vlan_id)
                 self._create_vlan(iface, subif, vlan_id)
                 self._vlan_interfaces.append(subif)
 
@@ -57,10 +57,16 @@ class NetworkManager:
     def _unique_vlans(self) -> list[int]:
         return sorted({d.vlan for d in self._config.devices if d.vlan})
 
+    def _vlan_subif_name(self, parent: str, vlan_id: int) -> str:
+        """Build a VLAN subinterface name that fits within Linux's 15-char limit."""
+        suffix = f".{vlan_id}"
+        max_parent = 15 - len(suffix)
+        return f"{parent[:max_parent]}{suffix}"
+
     def _target_interface(self, dev) -> str:
         iface = self._config.traffic_interface
         if self.is_vlan_mode and dev.vlan:
-            return f"{iface}.{dev.vlan}"
+            return self._vlan_subif_name(iface, dev.vlan)
         return iface
 
     def _verify_interface_exists(self, iface: str) -> None:
@@ -94,9 +100,14 @@ class NetworkManager:
             ["ip", "addr", "add", cidr, "dev", interface],
             capture_output=True, text=True,
         )
-        # Exit code 2 / EEXIST means the address is already assigned — fine on a
-        # same-session restart. Any other failure aborts startup.
-        if result.returncode != 0 and "File exists" not in result.stderr:
+        # The address may already be assigned from a previous run in the same VM
+        # session — that is fine, treat it as a no-op. iproute2 < 5.x reports
+        # "File exists"; newer versions say "Address already assigned.".
+        already_assigned = (
+            "File exists" in result.stderr
+            or "already assigned" in result.stderr
+        )
+        if result.returncode != 0 and not already_assigned:
             raise RuntimeError(self._error("assign IP", result))
 
     def _run(self, cmd: list[str]) -> None:
