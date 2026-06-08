@@ -87,7 +87,9 @@ def parse_and_validate(csv_text: str) -> tuple[list[Signal], list[SignalError]]:
     """
     errors: list[SignalError] = []
     csv_text = csv_text.replace("\r\n", "\n").replace("\r", "\n")
-    reader = csv.DictReader(io.StringIO(csv_text))
+    first_line = csv_text[:csv_text.index("\n")] if "\n" in csv_text else csv_text
+    delimiter = ";" if first_line.count(";") > first_line.count(",") else ","
+    reader = csv.DictReader(io.StringIO(csv_text), delimiter=delimiter)
 
     if reader.fieldnames is None:
         return [], [SignalError(1, "header", "file is empty")]
