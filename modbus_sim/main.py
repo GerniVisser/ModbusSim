@@ -42,6 +42,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--restore", action="store_true",
                         help="Re-load an existing locked project from disk and go straight to RUNNING "
                              "(crash-recovery; skips the lock-file guard)")
+    parser.add_argument("--internal-port", type=int, default=None,
+                        help="Bind Flask to localhost:PORT (subprocess mode used by gui_server)")
     return parser.parse_args(argv)
 
 
@@ -215,7 +217,9 @@ def main(argv=None) -> None:
     else:
         print(setup_banner(args.host, args.port, args.headless))
     # threaded=True so POST /api/stop and concurrent polling work; no reloader.
-    app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
+    _host = "127.0.0.1" if args.internal_port else args.host
+    _port = args.internal_port if args.internal_port else args.port
+    app.run(host=_host, port=_port, threaded=True, use_reloader=False)
 
 
 if __name__ == "__main__":

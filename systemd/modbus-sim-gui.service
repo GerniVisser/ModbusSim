@@ -1,0 +1,18 @@
+[Unit]
+Description=Modbus TCP Simulator — GUI & Engine Manager
+After=network.target
+Documentation=file:///home/png/ModbusSim/docs/VMWARE_SETUP.md
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/png/ModbusSim
+ExecStart=/home/png/ModbusSim/.venv/bin/python -m modbus_sim.gui_server \
+    --config /home/png/ModbusSim/project --port 80
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

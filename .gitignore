@@ -9,6 +9,7 @@ venv/
 # Runtime project state (uploaded per session; not source)
 project/sim_config.yaml
 project/devices/*.csv
+project/simulation.json
 project/**/.config_locked
 .config_locked
 
