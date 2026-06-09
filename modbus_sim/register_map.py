@@ -12,21 +12,34 @@ Storage model:
 
 Undefined addresses inside a block read back as 0. Reads outside the block range
 are rejected by ``in_range`` so the server returns Modbus exception 02.
+
+Simulation: when a signal has an active simulation profile (see ``simulator.py``),
+its value is generated from a shared clock AT READ TIME and overlaid on top of the
+stored value in ``read_block`` / ``read_coil`` / ``read_signal``. Generation always
+wins over a client/UI write for a simulated signal — the stored write still happens
+but is masked on the next read. Disabling simulation (or ``sim_mode=static``) makes
+reads return the stored values exactly as before.
 """
 
 from __future__ import annotations
 
+import bisect
 import struct
 import threading
 from typing import Optional
 
 from .signal_loader import Signal, WIDE_TYPES
+from .simulator import SimDefaults, clock, resolve_profile
 
 REGISTER_TYPES = ("holding", "input", "coil", "discrete_input")
+# Register types whose simulated signals are overlaid word-by-word in read_block.
+_WORD_TYPES = ("holding", "input")
+# Register types where each address is a standalone bit (one signal per address).
+_BIT_TYPES = ("coil", "discrete_input")
 
 
 class RegisterMap:
-    def __init__(self, signals: list[Signal]):
+    def __init__(self, signals: list[Signal], sim_defaults: Optional[SimDefaults] = None):
         self._signals = list(signals)
         self._by_name: dict[str, Signal] = {s.name: s for s in signals}
         self._lock = threading.RLock()
@@ -34,8 +47,15 @@ class RegisterMap:
         self._store: dict[str, dict[int, int]] = {rt: {} for rt in REGISTER_TYPES}
         # Inclusive [min, max] address bounds per register type.
         self._bounds: dict[str, tuple[int, int]] = {}
+        # Simulation profiles, resolved once and rebuilt on config change.
+        self._sim_defaults = sim_defaults
+        self._profiles: dict[str, object] = {}
+        self._sim_reg: dict[str, list] = {rt: [] for rt in _WORD_TYPES}
+        self._sim_addr: dict[str, list[int]] = {rt: [] for rt in _WORD_TYPES}
+        self._sim_bit: dict[str, dict[int, tuple]] = {rt: {} for rt in _BIT_TYPES}
         self._compute_bounds()
         self.set_defaults()
+        self._build_profiles()
 
     # ------------------------------------------------------------------ setup
     def _compute_bounds(self) -> None:
@@ -51,6 +71,43 @@ class RegisterMap:
             else:
                 # Minimal single-register block at address 0 (section 9).
                 self._bounds[rt] = (0, 0)
+
+    # ------------------------------------------------------------ simulation
+    def set_sim_defaults(self, sim_defaults: Optional[SimDefaults]) -> None:
+        """Swap the project simulation settings and rebuild profiles in place."""
+        self._sim_defaults = sim_defaults
+        self._build_profiles()
+
+    def _build_profiles(self) -> None:
+        """Resolve each signal's profile and index the active ones for fast reads.
+
+        Built into locals first, then swapped under the lock so concurrent reads
+        always see a consistent set of indexes.
+        """
+        profiles: dict[str, object] = {}
+        sim_reg: dict[str, list] = {rt: [] for rt in _WORD_TYPES}
+        sim_addr: dict[str, list[int]] = {rt: [] for rt in _WORD_TYPES}
+        sim_bit: dict[str, dict[int, tuple]] = {rt: {} for rt in _BIT_TYPES}
+
+        if self._sim_defaults and self._sim_defaults.enabled:
+            for s in self._signals:
+                prof = resolve_profile(s, self._sim_defaults)
+                if prof is None:
+                    continue
+                profiles[s.name] = prof
+                if s.register_type in _BIT_TYPES:
+                    sim_bit[s.register_type][s.address] = (s, prof)
+                else:  # holding / input — overlaid word-by-word
+                    sim_reg[s.register_type].append((s.address, s, prof))
+            for rt in _WORD_TYPES:
+                sim_reg[rt].sort(key=lambda x: x[0])
+                sim_addr[rt] = [item[0] for item in sim_reg[rt]]
+
+        with self._lock:
+            self._profiles = profiles
+            self._sim_reg = sim_reg
+            self._sim_addr = sim_addr
+            self._sim_bit = sim_bit
 
     # --------------------------------------------------------------- signals
     @property
@@ -71,7 +128,11 @@ class RegisterMap:
     def read_block(self, register_type: str, address: int, count: int) -> list[int]:
         with self._lock:
             store = self._store[register_type]
-            return [store.get(address + i, 0) for i in range(count)]
+            out = [store.get(address + i, 0) for i in range(count)]
+            sims = self._sim_reg.get(register_type)
+            if sims:
+                self._overlay_block(out, register_type, address, count)
+            return out
 
     def write_block(self, register_type: str, address: int, values: list[int]) -> None:
         with self._lock:
@@ -82,6 +143,9 @@ class RegisterMap:
     def read_coil(self, register_type: str, address: int) -> bool:
         """Read a single coil/discrete-input bit (one bit per address)."""
         with self._lock:
+            hit = self._sim_bit.get(register_type, {}).get(address)
+            if hit is not None:
+                return bool(hit[1].value(clock()))
             return bool(self._read_raw(register_type, address) & 1)
 
     def write_coil(self, register_type: str, address: int, value: bool) -> None:
@@ -95,9 +159,62 @@ class RegisterMap:
     def _write_raw(self, register_type: str, address: int, value: int) -> None:
         self._store[register_type][address] = int(value) & 0xFFFF
 
+    # ---------------------------------------------------------- sim overlay
+    def _overlay_block(self, out: list[int], register_type: str, address: int, count: int) -> None:
+        """Overlay simulated words for any active signal touching [address, address+count).
+
+        Caller holds ``self._lock``. Wide (32-bit) signals place both words honoring
+        word order; bit-in-word bools set their single bit on top of the base word.
+        A signal partially inside the window contributes only its in-range word(s).
+        """
+        sims = self._sim_reg[register_type]
+        addrs = self._sim_addr[register_type]
+        end = address + count  # exclusive
+        t = clock()
+        # A signal at address ``a`` (span <= 2) can touch the window only if
+        # a >= address-1; the sorted address list lets us skip everything below.
+        i = bisect.bisect_left(addrs, address - 1)
+        n = len(addrs)
+        while i < n and addrs[i] < end:
+            _a, signal, prof = sims[i]
+            self._place_raw(out, address, count, signal, self._typed_to_raw(signal, prof.value(t)))
+            i += 1
+
+    def _place_raw(self, out: list[int], base: int, count: int, signal: Signal, raw: int) -> None:
+        dt = signal.data_type
+        if dt in WIDE_TYPES:
+            high, low = (raw >> 16) & 0xFFFF, raw & 0xFFFF
+            w0, w1 = (low, high) if signal.word_order == "little_endian" else (high, low)
+            self._set_out(out, base, count, signal.address, w0)
+            self._set_out(out, base, count, signal.address + 1, w1)
+        elif dt == "bool":
+            idx = signal.address - base
+            if 0 <= idx < count:
+                bit = signal.bit_index or 0
+                if raw:
+                    out[idx] |= (1 << bit)
+                else:
+                    out[idx] &= ~(1 << bit)
+        else:  # uint16 / int16
+            self._set_out(out, base, count, signal.address, raw & 0xFFFF)
+
+    @staticmethod
+    def _set_out(out: list[int], base: int, count: int, addr: int, word: int) -> None:
+        idx = addr - base
+        if 0 <= idx < count:
+            out[idx] = word & 0xFFFF
+
     # --------------------------------------------------------- typed access
     def read_signal(self, signal: Signal):
         """Return the typed engineering-domain value (raw register interpretation)."""
+        prof = self._profiles.get(signal.name)
+        if prof is not None:
+            v = prof.value(clock())
+            if signal.data_type == "bool":
+                return bool(v)
+            if signal.data_type == "float32":
+                return float(v)
+            return int(round(v))
         rt, addr, dt = signal.register_type, signal.address, signal.data_type
         with self._lock:
             if dt == "uint16":

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import config_loader, signal_loader
+from . import config_loader, signal_loader, simulator
 from .config_loader import SimConfig
 from .modbus_server import ModbusServerManager
 from .network_manager import NetworkManager
@@ -76,6 +76,18 @@ def _is_root() -> bool:
     return hasattr(os, "geteuid") and os.geteuid() == 0
 
 
+def _rewrite_traffic_interface(config_path: Path, old: str, new: str) -> None:
+    """Replace the traffic_interface value in the YAML file via regex."""
+    import re
+    text = config_path.read_text(encoding="utf-8")
+    updated = re.sub(
+        r"(traffic_interface:\s*)" + re.escape(old),
+        r"\g<1>" + new,
+        text,
+    )
+    config_path.write_text(updated, encoding="utf-8")
+
+
 class StateMachine:
     def __init__(
         self,
@@ -100,6 +112,8 @@ class StateMachine:
         self._regmaps: dict[str, RegisterMap] = {}      # device_id -> RegisterMap
         self._servers = ModbusServerManager()
         self._network: Optional[NetworkManager] = None
+        # Project-wide simulation settings (persisted as simulation.json).
+        self._sim_defaults = simulator.load_defaults(self.project_dir)
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
@@ -209,6 +223,7 @@ class StateMachine:
         return {
             "config_uploaded": self.config is not None,
             "config_locked": self.config_locked,
+            "traffic_interface": self.config.traffic_interface if self.config else "",
             "devices_total": total,
             "devices_ready": len(self._signals),
             "devices_pending": pending,
@@ -239,7 +254,8 @@ class StateMachine:
 
         # Build register maps from the validated signal lists.
         self._regmaps = {
-            d.id: RegisterMap(self._signals[d.id]) for d in self.config.devices
+            d.id: RegisterMap(self._signals[d.id], sim_defaults=self._sim_defaults)
+            for d in self.config.devices
         }
 
         # Network setup (real ip commands on the VM). Errors abort the transition.
@@ -363,7 +379,7 @@ class StateMachine:
 
         # Persist, rebuild, and atomically swap the runtime.
         (self.project_dir / dev.signals_file).write_text(csv_text, encoding="utf-8")
-        new_regmap = RegisterMap(signals)
+        new_regmap = RegisterMap(signals, sim_defaults=self._sim_defaults)
         self._servers.hot_reload(device_id, new_regmap)
         self._regmaps[device_id] = new_regmap
         self._signals[device_id] = signals
@@ -375,6 +391,45 @@ class StateMachine:
     def signals_csv(self, device_id: str) -> str:
         regmap = self._regmap(device_id)
         return signal_loader.signals_to_csv(regmap.signals)
+
+    # ------------------------------------------------------------- simulation
+    def get_simulation(self) -> dict:
+        """Current project-wide simulation settings (available in any state)."""
+        return self._sim_defaults.to_dict()
+
+    def set_simulation(self, patch: dict) -> dict:
+        """Merge a partial update into the simulation settings, persist, apply live.
+
+        Because values are generated on read, applying a change just rebuilds each
+        register map's profiles — no server restart and no signal reload needed.
+        """
+        merged = {**self._sim_defaults.to_dict(), **(patch or {})}
+        new = simulator.SimDefaults.from_dict(merged)
+        errors = simulator.validate_defaults(new)
+        if errors:
+            raise ValidationError(errors)
+        self._sim_defaults = new
+        self.project_dir.mkdir(parents=True, exist_ok=True)
+        simulator.save_defaults(self.project_dir, new)
+        for regmap in self._regmaps.values():
+            regmap.set_sim_defaults(new)
+        return {"ok": True, "simulation": new.to_dict()}
+
+    def set_device_simulation(self, device_id: str, sim_mode: str,
+                              section: Optional[str] = None) -> dict:
+        """Bulk-apply a per-signal sim_mode to one device (optionally one section)."""
+        regmap = self._regmap(device_id)
+        if sim_mode not in ("", *signal_loader.VALID_SIM_MODES):
+            raise ValidationError([f"'{sim_mode}' is not a valid sim_mode"])
+        rows = []
+        for s in regmap.signals:
+            row = signal_loader.signal_to_dict(s)
+            if section is None or s.section == section:
+                row["sim_mode"] = sim_mode
+            rows.append(row)
+        result = self.hot_reload_json(device_id, rows)
+        result["sim_mode"] = sim_mode
+        return result
 
     # --------------------------------------------------------- config / network
     def config_summary(self) -> dict:
@@ -442,7 +497,7 @@ class StateMachine:
             self._network.teardown()
 
         # Delete persisted files.
-        for fname in (LOCK_FILENAME, CONFIG_FILENAME):
+        for fname in (LOCK_FILENAME, CONFIG_FILENAME, simulator.SIM_FILENAME):
             try:
                 (self.project_dir / fname).unlink(missing_ok=True)
             except Exception:
@@ -459,6 +514,7 @@ class StateMachine:
         self.started_at = None
         self._signals = {}
         self._regmaps = {}
+        self._sim_defaults = simulator.SimDefaults()
         self._servers = ModbusServerManager()
         self._network = None
         self._loop = None
@@ -467,6 +523,57 @@ class StateMachine:
 
         self.state = SETUP
         return {"ok": True, "message": "Engine reset to SETUP"}
+
+    # -------------------------------------------------- change traffic interface
+    def change_traffic_interface(self, new_interface: str) -> dict:
+        """Hot-swap the Modbus traffic NIC. Causes a brief service outage."""
+        with self._lock:
+            self._require(RUNNING)
+
+        # Stop Modbus servers — keep the asyncio loop alive.
+        if self._loop is not None and self._loop.is_running():
+            try:
+                fut = asyncio.run_coroutine_threadsafe(self._servers.stop(), self._loop)
+                fut.result(timeout=5)
+            except Exception:
+                pass
+
+        # Teardown old network interfaces.
+        if self.manage_network and self._network is not None:
+            self._network.teardown()
+            self._network = None
+
+        # Update config in memory and rewrite the YAML on disk.
+        old_interface = self.config.traffic_interface
+        self.config.traffic_interface = new_interface
+        _rewrite_traffic_interface(
+            self.project_dir / CONFIG_FILENAME, old_interface, new_interface
+        )
+
+        # Setup network on the new interface.
+        if self.manage_network:
+            self._network = NetworkManager(self.config)
+            try:
+                self._network.setup()
+            except RuntimeError as exc:
+                self.config.traffic_interface = old_interface  # rollback memory
+                raise EngineError(str(exc)) from exc
+
+        # Restart Modbus servers on the still-running asyncio loop.
+        self._servers = ModbusServerManager()
+        devices = [(d, self._regmaps[d.id]) for d in self.config.devices]
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self._servers.bind(devices), self._loop
+            )
+            fut.result(timeout=15)
+        except Exception as exc:
+            raise EngineError(f"failed to restart Modbus servers: {exc}") from exc
+        self._serve_future = asyncio.run_coroutine_threadsafe(
+            self._servers.serve(), self._loop
+        )
+
+        return {"ok": True, "old_interface": old_interface, "new_interface": new_interface}
 
     # ------------------------------------------------------------------- stop
     def stop(self) -> dict:

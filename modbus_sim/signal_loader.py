@@ -19,6 +19,8 @@ REGISTER_TYPES = ("holding", "input", "coil", "discrete_input")
 DATA_TYPES = ("uint16", "int16", "uint32", "int32", "float32", "bool")
 WORD_ORDERS = ("big_endian", "little_endian")
 WIDE_TYPES = ("uint32", "int32", "float32")  # occupy 2 registers, need word_order
+# Per-signal simulation override modes (empty = inherit the project default).
+VALID_SIM_MODES = ("static", "oscillate", "sawtooth", "toggle")
 
 HEADER = [
     "name",
@@ -35,6 +37,11 @@ HEADER = [
     "writable",
 ]
 
+# Optional simulation columns appended when writing CSVs. They are NOT part of the
+# required-column check, so existing signal files without them still load fine.
+SIM_COLUMNS = ["sim_mode", "sim_min", "sim_max", "sim_period"]
+FULL_HEADER = HEADER + SIM_COLUMNS
+
 
 @dataclass
 class Signal:
@@ -50,6 +57,13 @@ class Signal:
     description: str = ""
     default_value: float = 0.0  # engineering value as written in the CSV
     writable: bool = False
+    # Optional per-signal simulation override (empty sim_mode => inherit project
+    # default; "static" => never fluctuate). sim_min/sim_max override the value
+    # range; sim_period overrides the cycle length. See simulator.resolve_profile.
+    sim_mode: str = ""
+    sim_min: Optional[float] = None
+    sim_max: Optional[float] = None
+    sim_period: Optional[float] = None
     # Raw register default(s), computed at load time. For float32 this is the
     # IEEE-754 u32; for ints it is the masked value; for bool it is 0/1.
     default_raw: int = field(default=0)
@@ -207,6 +221,27 @@ def parse_and_validate(csv_text: str) -> tuple[list[Signal], list[SignalError]]:
         if data_type == "bool" and default_value not in (0.0, 1.0):
             errors.append(SignalError(row, "default_value", "bool default must be 0 or 1"))
 
+        # Optional simulation columns (absent in legacy CSVs => empty / inherit).
+        sim_mode = (raw.get("sim_mode") or "").strip()
+        if sim_mode and sim_mode not in VALID_SIM_MODES:
+            errors.append(
+                SignalError(row, "sim_mode", f"'{sim_mode}' is not a valid sim_mode")
+            )
+
+        def _opt_float(col: str) -> Optional[float]:
+            sv = (raw.get(col) or "").strip()
+            if sv == "":
+                return None
+            try:
+                return float(sv)
+            except ValueError:
+                errors.append(SignalError(row, col, f"'{sv}' is not a number"))
+                return None
+
+        sim_min = _opt_float("sim_min")
+        sim_max = _opt_float("sim_max")
+        sim_period = _opt_float("sim_period")
+
         # Overlap / bit-uniqueness checks (only when address + types are valid).
         if address is not None and data_type in DATA_TYPES and register_type in REGISTER_TYPES:
             if bool_in_word and bit_index is not None:
@@ -251,6 +286,10 @@ def parse_and_validate(csv_text: str) -> tuple[list[Signal], list[SignalError]]:
                 description=(raw.get("description") or "").strip(),
                 default_value=default_value,
                 writable=_to_bool(raw.get("writable") or ""),
+                sim_mode=sim_mode,
+                sim_min=sim_min,
+                sim_max=sim_max,
+                sim_period=sim_period,
                 default_raw=default_raw,
             )
         )
@@ -282,7 +321,7 @@ def signals_to_csv(signals: list[Signal]) -> str:
     """Serialize a Signal list back to the canonical CSV text (for download / disk)."""
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
-    writer.writerow(HEADER)
+    writer.writerow(FULL_HEADER)
     for s in signals:
         writer.writerow([
             s.name,
@@ -297,6 +336,10 @@ def signals_to_csv(signals: list[Signal]) -> str:
             s.description,
             _fmt_num(s.default_value),
             str(s.writable).lower(),
+            s.sim_mode or "",
+            "" if s.sim_min is None else _fmt_num(s.sim_min),
+            "" if s.sim_max is None else _fmt_num(s.sim_max),
+            "" if s.sim_period is None else _fmt_num(s.sim_period),
         ])
     return out.getvalue()
 
@@ -308,6 +351,11 @@ def _fmt_num(value: float) -> str:
     return str(value)
 
 
+def _blank_if_none(value) -> str:
+    """Empty string for unset optional fields; otherwise the value as-is."""
+    return "" if value is None or value == "" else value
+
+
 def signals_from_json(rows: list[dict]) -> str:
     """Convert a JSON signal list (web-UI editor / hot-reload body) to CSV text.
 
@@ -316,7 +364,7 @@ def signals_from_json(rows: list[dict]) -> str:
     """
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
-    writer.writerow(HEADER)
+    writer.writerow(FULL_HEADER)
     for r in rows:
         bit = r.get("bit_index")
         writer.writerow([
@@ -332,6 +380,10 @@ def signals_from_json(rows: list[dict]) -> str:
             r.get("description", ""),
             r.get("default_value", ""),
             r.get("writable", False),
+            r.get("sim_mode") or "",
+            _blank_if_none(r.get("sim_min")),
+            _blank_if_none(r.get("sim_max")),
+            _blank_if_none(r.get("sim_period")),
         ])
     return out.getvalue()
 
@@ -351,4 +403,8 @@ def signal_to_dict(s: Signal) -> dict:
         "description": s.description,
         "default_value": s.default_value,
         "writable": s.writable,
+        "sim_mode": s.sim_mode,
+        "sim_min": s.sim_min,
+        "sim_max": s.sim_max,
+        "sim_period": s.sim_period,
     }

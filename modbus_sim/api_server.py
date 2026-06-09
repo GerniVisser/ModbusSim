@@ -104,6 +104,34 @@ def create_app(engine: StateMachine, headless: bool = False) -> Flask:
     def health():
         return jsonify({"ok": True})
 
+    @app.get("/api/interfaces")
+    def list_interfaces():
+        import json as _json
+        import subprocess as _sp
+        result = _sp.run(["ip", "-j", "link", "show"], capture_output=True, text=True)
+        if result.returncode != 0:
+            return jsonify([])
+        try:
+            raw = _json.loads(result.stdout)
+        except _json.JSONDecodeError:
+            return jsonify([])
+        _EXCLUDE = ("lo", "vmnet", "docker", "veth", "virbr", "br-")
+        out = []
+        for iface in raw:
+            name = iface.get("ifname", "")
+            if iface.get("link_type") == "loopback":
+                continue
+            if any(name.startswith(p) for p in _EXCLUDE):
+                continue
+            if "." in name:  # VLAN subinterface created by engine
+                continue
+            out.append({
+                "name": name,
+                "mac": iface.get("address", ""),
+                "state": iface.get("operstate", "?"),
+            })
+        return jsonify(out)
+
     # ----------------------------------------------------------- setup endpoints
     @app.post("/api/setup/config")
     def setup_config():
@@ -157,6 +185,24 @@ def create_app(engine: StateMachine, headless: bool = False) -> Flask:
     def clear_all():
         return jsonify(engine.clear_all())
 
+    # --------------------------------------------------- value simulation config
+    @app.get("/api/simulation")
+    def get_simulation():
+        return jsonify(engine.get_simulation())
+
+    @app.post("/api/simulation")
+    def set_simulation():
+        body = request.get_json(silent=True) or {}
+        return jsonify(engine.set_simulation(body))
+
+    @app.post("/api/devices/<device_id>/simulation")
+    def set_device_simulation(device_id):
+        body = request.get_json(silent=True) or {}
+        if "sim_mode" not in body:
+            raise ValidationError(["body must contain 'sim_mode'"])
+        section = body.get("section")
+        return jsonify(engine.set_device_simulation(device_id, body["sim_mode"], section))
+
     @app.post("/api/devices/<device_id>/signals")
     def hot_reload(device_id):
         body = request.get_json(silent=True) or {}
@@ -186,6 +232,14 @@ def create_app(engine: StateMachine, headless: bool = False) -> Flask:
     @app.get("/api/network")
     def network():
         return jsonify(engine.network_state())
+
+    @app.post("/api/config/interface")
+    def change_interface():
+        body = request.get_json(silent=True) or {}
+        iface = (body.get("interface") or "").strip()
+        if not iface:
+            raise ValidationError(["'interface' field is required"])
+        return jsonify(engine.change_traffic_interface(iface))
 
     @app.post("/api/stop")
     def stop():
