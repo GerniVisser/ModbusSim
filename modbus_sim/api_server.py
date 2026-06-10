@@ -203,6 +203,11 @@ def create_app(engine: StateMachine, headless: bool = False) -> Flask:
         section = body.get("section")
         return jsonify(engine.set_device_simulation(device_id, body["sim_mode"], section))
 
+    @app.post("/api/devices/<device_id>/signals/<signal_name>/sim")
+    def set_signal_sim(device_id, signal_name):
+        body = request.get_json(silent=True) or {}
+        return jsonify(engine.set_signal_sim(device_id, signal_name, body))
+
     @app.post("/api/devices/<device_id>/signals")
     def hot_reload(device_id):
         body = request.get_json(silent=True) or {}

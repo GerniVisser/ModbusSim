@@ -20,7 +20,7 @@ DATA_TYPES = ("uint16", "int16", "uint32", "int32", "float32", "bool")
 WORD_ORDERS = ("big_endian", "little_endian")
 WIDE_TYPES = ("uint32", "int32", "float32")  # occupy 2 registers, need word_order
 # Per-signal simulation override modes (empty = inherit the project default).
-VALID_SIM_MODES = ("static", "oscillate", "sawtooth", "toggle")
+VALID_SIM_MODES = ("static", "oscillate", "sawtooth", "triangle", "step", "toggle")
 
 HEADER = [
     "name",
@@ -39,7 +39,7 @@ HEADER = [
 
 # Optional simulation columns appended when writing CSVs. They are NOT part of the
 # required-column check, so existing signal files without them still load fine.
-SIM_COLUMNS = ["sim_mode", "sim_min", "sim_max", "sim_period"]
+SIM_COLUMNS = ["sim_mode", "sim_min", "sim_max", "sim_period", "sim_step"]
 FULL_HEADER = HEADER + SIM_COLUMNS
 
 
@@ -58,12 +58,15 @@ class Signal:
     default_value: float = 0.0  # engineering value as written in the CSV
     writable: bool = False
     # Optional per-signal simulation override (empty sim_mode => inherit project
-    # default; "static" => never fluctuate). sim_min/sim_max override the value
-    # range; sim_period overrides the cycle length. See simulator.resolve_profile.
+    # default; "static" => never fluctuate). sim_min/sim_max are the low/high the
+    # value moves between (a numeric signal only fluctuates when both are set).
+    # sim_period is the cycle length (or, for the "step" motion, the hold interval);
+    # sim_step is the jump size for the "step" motion. See simulator.resolve_profile.
     sim_mode: str = ""
     sim_min: Optional[float] = None
     sim_max: Optional[float] = None
     sim_period: Optional[float] = None
+    sim_step: Optional[float] = None
     # Raw register default(s), computed at load time. For float32 this is the
     # IEEE-754 u32; for ints it is the masked value; for bool it is 0/1.
     default_raw: int = field(default=0)
@@ -241,6 +244,7 @@ def parse_and_validate(csv_text: str) -> tuple[list[Signal], list[SignalError]]:
         sim_min = _opt_float("sim_min")
         sim_max = _opt_float("sim_max")
         sim_period = _opt_float("sim_period")
+        sim_step = _opt_float("sim_step")
 
         # Overlap / bit-uniqueness checks (only when address + types are valid).
         if address is not None and data_type in DATA_TYPES and register_type in REGISTER_TYPES:
@@ -290,6 +294,7 @@ def parse_and_validate(csv_text: str) -> tuple[list[Signal], list[SignalError]]:
                 sim_min=sim_min,
                 sim_max=sim_max,
                 sim_period=sim_period,
+                sim_step=sim_step,
                 default_raw=default_raw,
             )
         )
@@ -340,6 +345,7 @@ def signals_to_csv(signals: list[Signal]) -> str:
             "" if s.sim_min is None else _fmt_num(s.sim_min),
             "" if s.sim_max is None else _fmt_num(s.sim_max),
             "" if s.sim_period is None else _fmt_num(s.sim_period),
+            "" if s.sim_step is None else _fmt_num(s.sim_step),
         ])
     return out.getvalue()
 
@@ -384,6 +390,7 @@ def signals_from_json(rows: list[dict]) -> str:
             _blank_if_none(r.get("sim_min")),
             _blank_if_none(r.get("sim_max")),
             _blank_if_none(r.get("sim_period")),
+            _blank_if_none(r.get("sim_step")),
         ])
     return out.getvalue()
 
@@ -407,4 +414,5 @@ def signal_to_dict(s: Signal) -> dict:
         "sim_min": s.sim_min,
         "sim_max": s.sim_max,
         "sim_period": s.sim_period,
+        "sim_step": s.sim_step,
     }

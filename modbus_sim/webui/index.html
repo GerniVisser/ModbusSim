@@ -203,7 +203,7 @@
     #rt-sig-col-hdr {
       flex-shrink: 0;
       display: none;
-      grid-template-columns: minmax(0,1fr) 90px 140px 90px 60px;
+      grid-template-columns: minmax(0,1fr) 76px 104px 72px 72px 26px 80px 48px;
       padding: 0 16px;
       border-bottom: 1px solid var(--border);
       height: 28px;
@@ -231,7 +231,7 @@
     }
     .sig-row {
       display: grid;
-      grid-template-columns: minmax(0,1fr) 90px 140px 90px 60px;
+      grid-template-columns: minmax(0,1fr) 76px 104px 72px 72px 26px 80px 48px;
       align-items: center;
       padding: 0 16px;
       border-bottom: 1px solid #1c2128;
@@ -261,6 +261,40 @@
     input.sig-num.is-invalid { border-color: var(--red) !important; }
     .sig-scaled { color: var(--muted); font-size: .77rem; font-family: monospace; }
     .sig-unit   { color: var(--muted); font-size: .77rem; overflow: hidden; text-overflow: ellipsis; }
+
+    /* low/high range inputs reuse the value-input look */
+    input.sig-lo, input.sig-hi {
+      width: 100%;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      color: var(--text);
+      font-size: .78rem;
+      padding: 2px 5px;
+      transition: border-color .1s, background .1s;
+    }
+    input.sig-lo:hover, input.sig-hi:hover { border-color: var(--border); }
+    input.sig-lo:focus, input.sig-hi:focus { border-color: var(--accent); background: #0d1117; outline: none; }
+    input.sig-lo::placeholder, input.sig-hi::placeholder { color: #3a434f; }
+    .sig-motion-btn {
+      background: transparent; border: none; cursor: pointer; padding: 0;
+      font-size: .9rem; line-height: 1; opacity: .5; transition: opacity .1s;
+    }
+    .sig-motion-btn:hover { opacity: 1; }
+    .sig-motion-btn.on { opacity: 1; }
+
+    /* motion popover */
+    #motion-pop {
+      position: fixed; z-index: 1080; width: 290px;
+      background: #161b22; border: 1px solid var(--border); border-radius: 8px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.55); padding: 12px; font-size: .8rem;
+    }
+    #motion-pop h6 { font-size: .8rem; margin: 0 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #motion-pop label.mo { display: flex; align-items: center; gap: 6px; padding: 3px 0; cursor: pointer; }
+    #motion-pop .mo-fields { display: flex; align-items: center; gap: 4px; margin: 4px 0 6px 22px; flex-wrap: wrap; color: var(--muted); }
+    #motion-pop input[type=number] { width: 64px; background: #0d1117; border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 2px 5px; font-size: .78rem; }
+    #motion-pop .mo-preview { margin-top: 8px; padding: 6px 8px; background: #0d1117; border-radius: 6px; font-family: monospace; font-size: .72rem; color: var(--muted); word-break: break-word; }
+    #motion-pop .mo-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
 
     /* empty state */
     .rt-empty {
@@ -357,7 +391,7 @@
                placeholder="Filter signals…" autocomplete="off">
       </div>
       <div id="rt-sig-col-hdr">
-        <div>Signal Name</div><div>Type</div><div>Raw Value</div><div>Scaled</div><div>Unit</div>
+        <div>Signal Name</div><div>Type</div><div>Raw Value</div><div>Low</div><div>High</div><div title="motion">⚡</div><div>Scaled</div><div>Unit</div>
       </div>
       <div id="rt-signal-area"></div>
     </main>

@@ -1,7 +1,7 @@
 /* Global value-simulation control. Opens a modal to toggle the master switch and
- * set the inherited defaults (mode / period / amplitude). Because values are
- * generated on read, applying a change takes effect immediately — no restart.
- * Per-signal overrides live in the signal editor (sim_mode / sim_min/max/period). */
+ * set the inherited defaults (default motion / period). Because values are generated
+ * on read, applying a change takes effect immediately — no restart. Per-signal
+ * low/high + motion are set inline in the runtime grid (⚡ on a row). */
 (function () {
   "use strict";
 
@@ -37,26 +37,24 @@
       `<div class="modal-header"><h5 class="modal-title">Value Simulation</h5>` +
       `<button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>` +
       `<div class="modal-body">` +
-      `<p class="text-muted small mb-3">Make register values fluctuate over time. Settings below are the ` +
-      `project-wide default; individual signals can override the mode and range in the signal editor.</p>` +
+      `<p class="text-muted small mb-3">Make register values fluctuate over time. ` +
+      `Set each signal's <strong>low / high</strong> and motion in the runtime grid (⚡ on a row) — ` +
+      `signals without a low/high stay static. The settings below are just the defaults a signal ` +
+      `inherits when it doesn't specify its own.</p>` +
       `<div class="form-check form-switch mb-3">` +
       `<input class="form-check-input" type="checkbox" id="sim-enabled"${s.enabled ? " checked" : ""}>` +
       `<label class="form-check-label fw-semibold" for="sim-enabled">Simulation enabled</label></div>` +
       `<div class="row g-2">` +
-      `<div class="col-6"><label class="form-label small mb-1">Numeric mode</label>` +
-      `<select class="form-select form-select-sm" id="sim-numeric">${opts(["oscillate", "sawtooth", "static"], s.numeric_mode)}</select></div>` +
-      `<div class="col-6"><label class="form-label small mb-1">Boolean mode</label>` +
+      `<div class="col-6"><label class="form-label small mb-1">Default motion</label>` +
+      `<select class="form-select form-select-sm" id="sim-numeric">${opts(["oscillate", "sawtooth", "triangle", "static"], s.numeric_mode)}</select></div>` +
+      `<div class="col-6"><label class="form-label small mb-1">Boolean motion</label>` +
       `<select class="form-select form-select-sm" id="sim-bool">${opts(["toggle", "static"], s.bool_mode)}</select></div>` +
-      `<div class="col-6"><label class="form-label small mb-1">Period (seconds)</label>` +
+      `<div class="col-6"><label class="form-label small mb-1">Default period (seconds)</label>` +
       `<input class="form-control form-control-sm" type="number" step="any" min="0" id="sim-period" value="${s.period_seconds ?? 10}"></div>` +
-      `<div class="col-6"><label class="form-label small mb-1">Amplitude (± %)</label>` +
-      `<input class="form-control form-control-sm" type="number" step="any" min="0" id="sim-pct" value="${s.amplitude_pct ?? 20}"></div>` +
-      `<div class="col-6"><label class="form-label small mb-1">Amplitude floor</label>` +
-      `<input class="form-control form-control-sm" type="number" step="any" min="0" id="sim-floor" value="${s.amplitude_floor ?? 10}"></div>` +
       `</div>` +
-      `<p class="text-muted mt-3 mb-0" style="font-size:.72rem">Range defaults to each signal's ` +
-      `default value ± amplitude %, with the floor as a minimum absolute swing. While a signal is ` +
-      `simulated its generated value overrides client writes.</p>` +
+      `<p class="text-muted mt-3 mb-0" style="font-size:.72rem">A simulated signal's generated value ` +
+      `overrides client writes on the next read. Motions: oscillate (sine), sawtooth (ramp &amp; reset), ` +
+      `triangle (ramp up/down). Per-signal step motion is set from the grid.</p>` +
       `<div id="sim-err" class="mt-2"></div>` +
       `</div><div class="modal-footer">` +
       `<button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>` +
@@ -81,8 +79,6 @@
       numeric_mode: document.getElementById("sim-numeric").value,
       bool_mode: document.getElementById("sim-bool").value,
       period_seconds: Number(document.getElementById("sim-period").value),
-      amplitude_pct: Number(document.getElementById("sim-pct").value),
-      amplitude_floor: Number(document.getElementById("sim-floor").value),
     };
     const b = document.getElementById("sim-apply");
     b.disabled = true;

@@ -431,6 +431,65 @@ class StateMachine:
         result["sim_mode"] = sim_mode
         return result
 
+    def set_signal_sim(self, device_id: str, name: str, fields: dict) -> dict:
+        """Update one signal's per-signal simulation fields in place and apply live.
+
+        Lightweight alternative to a full hot reload: mutate the signal's sim_* fields,
+        rebuild only this device's profiles, and rewrite the device CSV so the change
+        survives restart/restore. Accepts any of sim_mode/sim_min/sim_max/sim_period/
+        sim_step; an absent key is left unchanged, an explicit null/"" clears it.
+        """
+        regmap = self._regmap(device_id)
+        dev = self.config.device_by_id(device_id)
+        signal = regmap.get_signal(name)
+        if dev is None or signal is None:
+            raise NotFoundError(f"unknown signal '{name}' on device '{device_id}'")
+
+        fields = fields or {}
+        errors: list[str] = []
+
+        def _opt_num(key):
+            v = fields.get(key)
+            if v is None or v == "":
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                errors.append(f"{key} must be a number")
+                return None
+
+        if "sim_mode" in fields:
+            mode = (fields.get("sim_mode") or "").strip()
+            if mode and mode not in signal_loader.VALID_SIM_MODES:
+                errors.append(f"'{mode}' is not a valid sim_mode")
+            else:
+                signal.sim_mode = mode
+        if "sim_min" in fields:
+            signal.sim_min = _opt_num("sim_min")
+        if "sim_max" in fields:
+            signal.sim_max = _opt_num("sim_max")
+        if "sim_period" in fields:
+            p = _opt_num("sim_period")
+            if p is not None and p <= 0:
+                errors.append("sim_period must be > 0")
+            else:
+                signal.sim_period = p
+        if "sim_step" in fields:
+            st = _opt_num("sim_step")
+            if st is not None and st <= 0:
+                errors.append("sim_step must be > 0")
+            else:
+                signal.sim_step = st
+        if errors:
+            raise ValidationError(errors)
+
+        # Apply live (re-resolve this device's profiles) and persist the CSV.
+        regmap.rebuild_profiles()
+        (self.project_dir / dev.signals_file).write_text(
+            signal_loader.signals_to_csv(regmap.signals), encoding="utf-8"
+        )
+        return {"ok": True, "signal": signal_loader.signal_to_dict(signal)}
+
     # --------------------------------------------------------- config / network
     def config_summary(self) -> dict:
         self._require(RUNNING)

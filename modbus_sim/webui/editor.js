@@ -6,7 +6,7 @@
   const REG_TYPES  = ["holding", "input", "coil", "discrete_input"];
   const DATA_TYPES = ["uint16", "int16", "uint32", "int32", "float32", "bool"];
   const WORD_ORDERS = ["", "big_endian", "little_endian"];
-  const SIM_MODES = ["", "static", "oscillate", "sawtooth", "toggle"];
+  const SIM_MODES = ["", "static", "oscillate", "sawtooth", "triangle", "step", "toggle"];
   const WIDE = ["uint32", "int32", "float32"];
 
   let _modal = null;
@@ -59,10 +59,11 @@
                 <th>name</th><th>register_type</th><th>address</th><th>data_type</th>
                 <th>bit</th><th>word_order</th><th>scale</th><th>unit</th>
                 <th>section</th><th>default</th><th>writable</th>
-                <th title="empty = inherit project default">sim</th>
-                <th title="override min (engineering)">sim min</th>
-                <th title="override max (engineering)">sim max</th>
-                <th title="override cycle seconds">sim period</th><th></th>
+                <th title="motion: empty = inherit project default">sim</th>
+                <th title="low value (engineering)">low</th>
+                <th title="high value (engineering)">high</th>
+                <th title="cycle seconds (or hold interval for step)">period</th>
+                <th title="jump size for step motion">step</th><th></th>
               </tr>
             </thead>
             <tbody id="ed-rows"></tbody>
@@ -132,6 +133,7 @@
       `<td>${_num(s.sim_min, "f-sim")}</td>` +
       `<td>${_num(s.sim_max, "f-sim")}</td>` +
       `<td>${_num(s.sim_period, "f-sim")}</td>` +
+      `<td>${_num(s.sim_step, "f-sim")}</td>` +
       `<td><button class="btn btn-sm btn-outline-danger py-0 ed-del">×</button></td>`;
     tr.querySelector(".ed-del").onclick = () => { tr.remove(); _validate(); };
     return tr;
@@ -168,6 +170,7 @@
         sim_min:      n(inputs[7].value),
         sim_max:      n(inputs[8].value),
         sim_period:   n(inputs[9].value),
+        sim_step:     n(inputs[10].value),
       };
     });
   }

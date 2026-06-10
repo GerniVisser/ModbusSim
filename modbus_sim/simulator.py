@@ -30,8 +30,10 @@ from .signal_loader import Signal
 # Process-wide clock origin. ``monotonic`` is immune to wall-clock adjustments.
 _T0 = monotonic()
 
-# Modes selectable as a project-wide default, per data category.
-NUMERIC_MODES = ("oscillate", "sawtooth", "static")
+# Motions selectable as a project-wide default, per data category. "step" is a
+# per-signal-only motion (it needs an explicit step size), so it is not offered as a
+# global default — see signal_loader.VALID_SIM_MODES for the full per-signal set.
+NUMERIC_MODES = ("oscillate", "sawtooth", "triangle", "static")
 BOOL_MODES = ("toggle", "static")
 
 # Largest finite magnitude that survives float32 encoding (keeps reads finite).
@@ -56,11 +58,9 @@ class SimDefaults:
     """
 
     enabled: bool = False
-    numeric_mode: str = "oscillate"
+    numeric_mode: str = "oscillate"   # default motion for signals that set a range
     bool_mode: str = "toggle"
     period_seconds: float = 10.0
-    amplitude_pct: float = 20.0     # +/- % around default_value when no min/max set
-    amplitude_floor: float = 10.0   # minimum absolute swing (covers default_value ~ 0)
 
     @staticmethod
     def from_dict(d: Optional[dict]) -> "SimDefaults":
@@ -79,8 +79,6 @@ class SimDefaults:
             numeric_mode=str(d.get("numeric_mode", base.numeric_mode)),
             bool_mode=str(d.get("bool_mode", base.bool_mode)),
             period_seconds=_num("period_seconds", base.period_seconds),
-            amplitude_pct=_num("amplitude_pct", base.amplitude_pct),
-            amplitude_floor=_num("amplitude_floor", base.amplitude_floor),
         )
 
     def to_dict(self) -> dict:
@@ -95,10 +93,6 @@ def validate_defaults(d: SimDefaults) -> list[str]:
         errors.append(f"bool_mode must be one of {BOOL_MODES}")
     if d.period_seconds <= 0:
         errors.append("period_seconds must be > 0")
-    if d.amplitude_pct < 0:
-        errors.append("amplitude_pct must be >= 0")
-    if d.amplitude_floor < 0:
-        errors.append("amplitude_floor must be >= 0")
     return errors
 
 
@@ -120,26 +114,52 @@ def save_defaults(project_dir: Path | str, defaults: SimDefaults) -> None:
 # --------------------------------------------------------------------- profiles
 @dataclass
 class SimProfile:
-    """A signal's resolved generator. All ranges/period/phase precomputed once."""
+    """A signal's resolved generator. All ranges/period/phase precomputed once.
 
-    mode: str          # "oscillate" | "sawtooth" | "toggle"
+    Motions: ``oscillate`` (sine), ``sawtooth`` (ramp low->high then reset),
+    ``triangle`` (ramp low->high->low), ``step`` (discrete staircase that holds each
+    level for ``period`` seconds before jumping by ``step``), and ``toggle`` (bool
+    square wave). All are closed-form functions of the shared clock — no state.
+    """
+
+    mode: str          # "oscillate" | "sawtooth" | "triangle" | "step" | "toggle"
     is_bool: bool
     lo: float
     hi: float
-    period: float
+    period: float      # cycle length; for "step" this is the hold interval per level
     phase: float       # [0, 1)
+    step: float = 0.0  # only used by "step": engineering units per jump
 
     def value(self, t: float):
         """Engineering value at time ``t`` (bool for toggle, float otherwise)."""
+        if self.mode == "step":
+            return self._staircase(t)
         x = t / self.period + self.phase
         if self.mode == "toggle":
             return (x % 1.0) < 0.5
         if self.mode == "sawtooth":
             return self.lo + (self.hi - self.lo) * (x % 1.0)
+        if self.mode == "triangle":
+            f = x % 1.0
+            tri = 2.0 * f if f < 0.5 else 2.0 * (1.0 - f)  # 0 -> 1 -> 0
+            return self.lo + (self.hi - self.lo) * tri
         # oscillate (sine) between lo and hi
         mid = (self.lo + self.hi) / 2.0
         amp = (self.hi - self.lo) / 2.0
         return mid + amp * math.sin(2.0 * math.pi * x)
+
+    def _staircase(self, t: float) -> float:
+        """Discrete staircase: hold each level ``period`` s, jump ``step``, wrap low->high->low.
+
+        Unlike the smooth motions, ``step`` ignores the name-derived phase so it starts
+        at the low value at t=0 — matching the intuitive "low, then +step every interval".
+        """
+        span = self.hi - self.lo
+        if self.step <= 0 or span <= 0 or self.period <= 0:
+            return self.lo
+        levels = max(1, round(span / self.step))  # number of jumps low -> high
+        idx = int(t / self.period) % (levels + 1)
+        return min(self.lo + self.step * idx, self.hi)
 
 
 def _phase_for(name: str) -> float:
@@ -161,9 +181,13 @@ def _finite(v: float) -> float:
 def resolve_profile(signal: Signal, defaults: SimDefaults) -> Optional[SimProfile]:
     """Resolve a signal's effective profile, or ``None`` if it should stay static.
 
-    Precedence: an explicit ``signal.sim_mode`` overrides the project default;
-    ``static`` (or simulation disabled) yields ``None``. Range comes from explicit
-    ``sim_min``/``sim_max`` when both are set, else ``default_value`` +/- amplitude.
+    Opt-in by range: a numeric signal fluctuates only when it has BOTH ``sim_min``
+    and ``sim_max`` set (its low/high). With no range it stays static — there is no
+    longer an amplitude-percentage fallback. Bools fluctuate when not ``static``.
+
+    Motion: ``signal.sim_mode`` (oscillate/sawtooth/triangle/step) overrides the
+    project default; ``static`` (or simulation disabled) yields ``None``. For ``step``,
+    ``sim_period`` is the hold interval and ``sim_step`` is the jump size.
     """
     if not defaults.enabled:
         return None
@@ -186,16 +210,22 @@ def resolve_profile(signal: Signal, defaults: SimDefaults) -> Optional[SimProfil
         # Only a square wave makes sense for a single bit.
         return SimProfile("toggle", True, 0.0, 1.0, period, phase)
 
-    if signal.sim_min is not None and signal.sim_max is not None:
-        lo, hi = float(signal.sim_min), float(signal.sim_max)
-    else:
-        base = float(signal.default_value)
-        amp = max(abs(base) * defaults.amplitude_pct / 100.0, defaults.amplitude_floor)
-        lo, hi = base - amp, base + amp
+    # Numeric signals are opt-in: no explicit low/high => stay static.
+    if signal.sim_min is None or signal.sim_max is None:
+        return None
+    lo, hi = float(signal.sim_min), float(signal.sim_max)
     if hi < lo:
         lo, hi = hi, lo
     lo, hi = _finite(lo), _finite(hi)
 
-    if mode not in ("oscillate", "sawtooth"):
+    if mode == "step":
+        step = float(signal.sim_step) if signal.sim_step else 0.0
+        if step <= 0:
+            # "step" needs a positive jump size; without one fall back to a smooth ramp.
+            mode = "oscillate"
+        else:
+            return SimProfile("step", False, lo, hi, period, phase, step=abs(step))
+
+    if mode not in ("oscillate", "sawtooth", "triangle"):
         mode = "oscillate"
     return SimProfile(mode, False, lo, hi, period, phase)

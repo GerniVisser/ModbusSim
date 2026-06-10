@@ -78,6 +78,15 @@ class RegisterMap:
         self._sim_defaults = sim_defaults
         self._build_profiles()
 
+    def rebuild_profiles(self) -> None:
+        """Re-resolve profiles from the current signals + defaults.
+
+        Call after mutating a signal's sim_* fields in place (e.g. setting a signal's
+        low/high/motion from the runtime grid) so the change takes effect on the next
+        read without rebuilding the whole register map.
+        """
+        self._build_profiles()
+
     def _build_profiles(self) -> None:
         """Resolve each signal's profile and index the active ones for fast reads.
 
