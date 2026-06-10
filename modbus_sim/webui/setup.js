@@ -200,6 +200,9 @@
       <div id="start-err" class="mb-3"></div>
       <button class="btn btn-success btn-lg" id="start-btn">▶ Start Simulation</button>`;
     document.getElementById("start-btn").onclick = doStart;
+    // A previous start/auto-restore attempt failed (e.g. NIC unplugged) — show why,
+    // so the user understands what to fix before pressing Start again.
+    if (st.start_error) renderErrors("start-err", [st.start_error]);
   }
 
   async function doStart() {

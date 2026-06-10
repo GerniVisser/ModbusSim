@@ -107,6 +107,9 @@ class StateMachine:
         self.config: Optional[SimConfig] = None
         self.config_locked = False
         self.started_at: Optional[str] = None
+        # Reason the last start attempt failed (surfaced in setup_status so the UI
+        # can explain a failed start/auto-restore instead of leaving the user guessing).
+        self.start_error: Optional[str] = None
 
         self._signals: dict[str, list] = {}            # device_id -> list[Signal]
         self._regmaps: dict[str, RegisterMap] = {}      # device_id -> RegisterMap
@@ -229,6 +232,7 @@ class StateMachine:
             "devices_pending": pending,
             "devices": devices,
             "can_start": self.config is not None and not pending,
+            "start_error": self.start_error,
         }
 
     # --------------------------------------------------------- start transition
@@ -242,15 +246,19 @@ class StateMachine:
                 f"cannot start: devices missing signal files: {pending}", self.state
             )
 
+        # Fresh attempt: clear any error recorded by a previous failed start.
+        self.start_error = None
+
         # Root precondition (§17): needed for VLAN ops or privileged ports.
         needs_root = self.config.is_vlan_mode or any(
             d.port < 1024 for d in self.config.devices
         )
         if self.manage_network and needs_root and not _is_root():
-            raise EngineError(
+            self.start_error = (
                 "root privileges required (VLAN mode and/or port < 1024). "
                 "Run the engine as root."
             )
+            raise EngineError(self.start_error)
 
         # Build register maps from the validated signal lists.
         self._regmaps = {
@@ -265,6 +273,7 @@ class StateMachine:
                 self._network.setup()
             except RuntimeError as exc:
                 self._regmaps = {}
+                self.start_error = str(exc)
                 raise EngineError(str(exc)) from exc
 
         # Start the asyncio loop and bind/serve the Modbus servers.
@@ -277,11 +286,13 @@ class StateMachine:
             fut.result(timeout=15)
         except Exception as exc:  # bind failure
             self._regmaps = {}
-            raise EngineError(f"failed to start Modbus servers: {exc}") from exc
+            self.start_error = f"failed to start Modbus servers: {exc}"
+            raise EngineError(self.start_error) from exc
         self._serve_future = asyncio.run_coroutine_threadsafe(
             self._servers.serve(), self._loop
         )
 
+        self.start_error = None
         self.state = RUNNING
         self.started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if self._on_started is not None:

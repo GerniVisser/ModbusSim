@@ -145,21 +145,28 @@ def restore_banner(host: str, port: int, headless: bool) -> str:
     )
 
 
-def _restore_from_disk(engine: StateMachine) -> None:
-    """Re-upload config + signals from the project directory and start the engine."""
+def _restore_from_disk(engine: StateMachine) -> bool:
+    """Re-upload config + signals from the project directory and start the engine.
+
+    Returns True if the engine reached RUNNING. On any recoverable failure (no/invalid
+    config, a missing NIC, a bind error, …) it does NOT exit the process: it logs the
+    reason and returns False so the caller keeps serving the web UI in SETUP. That way a
+    correctable problem like the USB-C adapter not being plugged in surfaces in the UI
+    (via setup_status' ``start_error``) instead of the engine silently dying.
+    """
     project_dir = engine.project_dir
     config_file = project_dir / CONFIG_FILENAME
     if not config_file.exists():
-        print(f"--restore: {config_file} not found; cannot restore.", file=sys.stderr)
-        sys.exit(1)
+        print(f"--restore: {config_file} not found; starting in SETUP.", file=sys.stderr)
+        return False
 
     config_bytes = config_file.read_bytes()
     try:
         engine.config_locked = False
         result = engine.upload_config(config_bytes)
     except Exception as exc:
-        print(f"--restore: config load failed: {exc}", file=sys.stderr)
-        sys.exit(1)
+        print(f"--restore: config load failed: {exc}; starting in SETUP.", file=sys.stderr)
+        return False
 
     print(f"--restore: loaded config ({result['device_count']} device(s))")
 
@@ -172,14 +179,18 @@ def _restore_from_disk(engine: StateMachine) -> None:
             engine.upload_signals(dev.id, sig_path.read_bytes())
             print(f"--restore: loaded signals for '{dev.id}'")
         except Exception as exc:
-            print(f"--restore: signals for '{dev.id}' failed: {exc}", file=sys.stderr)
-            sys.exit(1)
+            print(f"--restore: signals for '{dev.id}' failed: {exc}; starting in SETUP.",
+                  file=sys.stderr)
+            return False
 
     try:
         engine.start()
     except Exception as exc:
         print(f"--restore: start failed: {exc}", file=sys.stderr)
-        sys.exit(1)
+        print("--restore: engine staying in SETUP — fix the issue (e.g. plug in the "
+              "network adapter) and press Start in the web UI.", file=sys.stderr)
+        return False
+    return True
 
 
 def _schedule_exit() -> None:
@@ -212,8 +223,12 @@ def main(argv=None) -> None:
         signal.signal(signal.SIGTERM, _on_signal)
 
     if args.restore:
-        _restore_from_disk(engine)
-        print(restore_banner(args.host, args.port, args.headless))
+        if _restore_from_disk(engine):
+            print(restore_banner(args.host, args.port, args.headless))
+        else:
+            # Restore could not reach RUNNING; serve the UI in SETUP so the user can
+            # see why (setup_status.start_error) and retry once it is fixed.
+            print(setup_banner(args.host, args.port, args.headless))
     else:
         print(setup_banner(args.host, args.port, args.headless))
     # threaded=True so POST /api/stop and concurrent polling work; no reloader.
