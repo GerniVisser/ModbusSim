@@ -264,30 +264,196 @@
     const regColor = _REG_COLOR[item.register_type] || "secondary";
     const regLabel = (item.register_type || "").replace("_", " ");
 
+    const motionBtn =
+      `<div><button class="sig-motion-btn${_simActive(item) ? " on" : ""}" ` +
+      `title="motion / simulation">⚡</button></div>`;
+    const nameCell =
+      `<div class="sig-name">${App.escapeHtml(item.name)}</div>` +
+      `<span class="badge text-bg-${regColor} sig-badge">${App.escapeHtml(regLabel)}</span>`;
+
     if (item.data_type === "bool") {
       el.innerHTML =
-        `<div class="sig-name">${App.escapeHtml(item.name)}</div>` +
-        `<span class="badge text-bg-${regColor} sig-badge">${App.escapeHtml(regLabel)}</span>` +
+        nameCell +
         `<div><div class="form-check form-switch mb-0 ms-1">` +
         `<input class="form-check-input sig-bool" type="checkbox" data-sig="${App.escapeHtml(item.name)}">` +
         `</div></div>` +
+        `<div class="sig-scaled" style="text-align:center">—</div>` +   /* low N/A  */
+        `<div class="sig-scaled" style="text-align:center">—</div>` +   /* high N/A */
+        motionBtn +
         `<div class="sig-scaled">—</div>` +
         `<div class="sig-unit">${App.escapeHtml(item.unit || "")}</div>`;
       el.querySelector(".sig-bool").onchange = (e) =>
         _setValue(item.name, e.target.checked);
     } else {
+      const lo = item.sim_min == null ? "" : item.sim_min;
+      const hi = item.sim_max == null ? "" : item.sim_max;
       el.innerHTML =
-        `<div class="sig-name">${App.escapeHtml(item.name)}</div>` +
-        `<span class="badge text-bg-${regColor} sig-badge">${App.escapeHtml(regLabel)}</span>` +
+        nameCell +
         `<div><input class="sig-num" type="number" step="any"` +
         ` data-sig="${App.escapeHtml(item.name)}" data-scale="${item.scale || 1}"></div>` +
+        `<div><input class="sig-lo" type="number" step="any" placeholder="—" value="${App.escapeHtml(String(lo))}"></div>` +
+        `<div><input class="sig-hi" type="number" step="any" placeholder="—" value="${App.escapeHtml(String(hi))}"></div>` +
+        motionBtn +
         `<div class="sig-scaled">—</div>` +
         `<div class="sig-unit">${App.escapeHtml(item.unit || "")}</div>`;
       const inp = el.querySelector(".sig-num");
       inp.onchange = () => _commitValue(inp);
       inp.onkeydown = (e) => { if (e.key === "Enter") inp.blur(); };
+      _wireRange(el.querySelector(".sig-lo"), item, "sim_min", el);
+      _wireRange(el.querySelector(".sig-hi"), item, "sim_max", el);
     }
+    el.querySelector(".sig-motion-btn").onclick = (e) => _openMotion(item, e.currentTarget, el);
     return el;
+  }
+
+  // ── per-signal simulation: low/high + motion ────────────────────────────────
+  // "Actively simulated" = would produce motion: numeric needs both low and high
+  // (and a non-static motion); a bool just needs a non-static motion.
+  function _simActive(item) {
+    if (item.sim_mode === "static") return false;
+    if (item.data_type === "bool") return true;
+    return item.sim_min != null && item.sim_max != null;
+  }
+
+  function _wireRange(inp, item, field, rowEl) {
+    const commit = () => {
+      const v = inp.value === "" ? null : Number(inp.value);
+      if (inp.value !== "" && isNaN(v)) { inp.classList.add("is-invalid"); return; }
+      inp.classList.remove("is-invalid");
+      if (item[field] === v) return;                  // unchanged
+      item[field] = v;                                 // update model immediately
+      _saveSim(item, { [field]: v }, rowEl);
+    };
+    inp.onchange = commit;
+    inp.onkeydown = (e) => { if (e.key === "Enter") inp.blur(); };
+  }
+
+  async function _saveSim(item, fields, rowEl) {
+    const r = await App.postJSON(
+      `/api/devices/${enc(_selected)}/signals/${encodeURIComponent(item.name)}/sim`, fields);
+    if (!r.ok) {
+      App.toast((r.data.errors || [r.data.error]).join("; "), "danger");
+      return false;
+    }
+    Object.assign(item, r.data.signal);   // adopt the server's canonical view
+    const btn = rowEl && rowEl.querySelector(".sig-motion-btn");
+    if (btn) btn.classList.toggle("on", _simActive(item));
+    return true;
+  }
+
+  // ── motion popover ──────────────────────────────────────────────────────────
+  const _NUM_MOTIONS = [
+    ["oscillate", "Oscillate (sine)"],
+    ["sawtooth", "Ramp & reset"],
+    ["triangle", "Sweep up/down"],
+    ["step", "Step (staircase)"],
+    ["static", "Static"],
+  ];
+  const _BOOL_MOTIONS = [["toggle", "Toggle on/off"], ["static", "Static"]];
+
+  function _closeMotion() {
+    const p = document.getElementById("motion-pop");
+    if (p) p.remove();
+    document.removeEventListener("mousedown", _motionOutside, true);
+    document.removeEventListener("keydown", _motionEsc, true);
+  }
+  function _motionOutside(e) {
+    const p = document.getElementById("motion-pop");
+    if (p && !p.contains(e.target) && !e.target.classList.contains("sig-motion-btn")) _closeMotion();
+  }
+  function _motionEsc(e) { if (e.key === "Escape") _closeMotion(); }
+
+  function _num(v) { return v == null || v === "" ? null : Number(v); }
+
+  function _motionPreview(item, mode, period, step) {
+    const lo = item.sim_min, hi = item.sim_max;
+    if (mode === "static") return "static — no motion";
+    if (item.data_type === "bool") return `on/off every ${period ? period + "s" : "?"} (half each)`;
+    if (lo == null || hi == null) return "⚠ set a Low and High first";
+    const per = period ? ` · ~${period}s` : "";
+    if (mode === "sawtooth") return `${lo} → ${hi} ramp, reset${per}`;
+    if (mode === "triangle") return `${lo} → ${hi} → ${lo}${per}`;
+    if (mode === "step") {
+      const s = _num(step), iv = _num(period);
+      if (!s || s <= 0) return "⚠ enter a step size";
+      const levels = Math.max(1, Math.round(Math.abs(hi - lo) / s));
+      const sweep = iv ? ` (~${(levels * iv).toLocaleString()}s/sweep)` : "";
+      const lo2 = Number(lo) + (hi >= lo ? s : -s);
+      return `${lo} ▸ ${lo2} ▸ … ▸ ${hi} ↻${sweep}`;
+    }
+    return `${lo} ↕ ${hi} · sine${per}`;
+  }
+
+  function _openMotion(item, anchorEl, rowEl) {
+    _closeMotion();
+    const isBool = item.data_type === "bool";
+    const motions = isBool ? _BOOL_MOTIONS : _NUM_MOTIONS;
+    let mode = item.sim_mode || (isBool ? "toggle" : "oscillate");
+    if (!motions.some(([v]) => v === mode)) mode = motions[0][0];
+
+    const pop = document.createElement("div");
+    pop.id = "motion-pop";
+    pop.innerHTML =
+      `<h6>⚡ ${App.escapeHtml(item.name)}</h6>` +
+      motions.map(([v, lbl]) =>
+        `<label class="mo"><input type="radio" name="mo-mode" value="${v}"${v === mode ? " checked" : ""}>` +
+        `<span>${lbl}</span></label>` +
+        (v === "step"
+          ? `<div class="mo-fields" data-for="step">+<input type="number" step="any" id="mo-step" placeholder="step"> every <input type="number" step="any" id="mo-int" placeholder="s"> s</div>`
+          : (v === "static"
+              ? ""
+              : `<div class="mo-fields" data-for="${v}">${isBool ? "every" : "period"} <input type="number" step="any" class="mo-period" placeholder="${isBool ? "s" : "auto"}"> s</div>`))
+      ).join("") +
+      `<div class="mo-preview" id="mo-preview"></div>` +
+      `<div class="mo-actions">` +
+      `<button class="btn btn-sm btn-secondary" id="mo-cancel">Cancel</button>` +
+      `<button class="btn btn-sm btn-primary" id="mo-apply">Apply</button></div>`;
+    document.body.appendChild(pop);
+
+    // Position below the ⚡, clamped to the viewport.
+    const r = anchorEl.getBoundingClientRect();
+    pop.style.top = Math.min(r.bottom + 6, window.innerHeight - pop.offsetHeight - 8) + "px";
+    pop.style.left = Math.max(8, Math.min(r.left - 250, window.innerWidth - pop.offsetWidth - 8)) + "px";
+
+    // Prefill timing fields from the model.
+    pop.querySelectorAll(".mo-period").forEach((el) => { if (item.sim_period != null) el.value = item.sim_period; });
+    const stepEl = pop.querySelector("#mo-step");
+    const intEl = pop.querySelector("#mo-int");
+    if (stepEl && item.sim_step != null) stepEl.value = item.sim_step;
+    if (intEl && item.sim_period != null) intEl.value = item.sim_period;
+
+    const selMode = () => pop.querySelector('input[name="mo-mode"]:checked').value;
+    const refresh = () => {
+      const m = selMode();
+      pop.querySelectorAll(".mo-fields").forEach((f) => {
+        f.style.display = f.dataset.for === m ? "flex" : "none";
+      });
+      let period, step;
+      if (m === "step") { step = stepEl ? stepEl.value : null; period = intEl ? intEl.value : null; }
+      else { const pe = pop.querySelector(`.mo-fields[data-for="${m}"] .mo-period`); period = pe ? pe.value : null; }
+      pop.querySelector("#mo-preview").textContent = _motionPreview(item, m, period, step);
+    };
+    pop.addEventListener("input", refresh);
+    pop.addEventListener("change", refresh);
+    refresh();
+
+    pop.querySelector("#mo-cancel").onclick = _closeMotion;
+    pop.querySelector("#mo-apply").onclick = async () => {
+      const m = selMode();
+      const fields = { sim_mode: m };
+      if (m === "step") {
+        fields.sim_step = _num(stepEl.value);
+        fields.sim_period = _num(intEl.value);
+      } else if (m !== "static") {
+        const pe = pop.querySelector(`.mo-fields[data-for="${m}"] .mo-period`);
+        fields.sim_period = pe ? _num(pe.value) : null;
+      }
+      const ok = await _saveSim(item, fields, rowEl);
+      if (ok) { _closeMotion(); _sigVL && _sigVL.refresh(); }
+    };
+
+    document.addEventListener("mousedown", _motionOutside, true);
+    document.addEventListener("keydown", _motionEsc, true);
   }
 
   // ── element cache (O(1) value refresh) ───────────────────────────────────
