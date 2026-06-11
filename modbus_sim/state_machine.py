@@ -399,6 +399,26 @@ class StateMachine:
             "signal_count": len(signals), "reloaded": True,
         }
 
+    def update_signal(self, device_id: str, name: str, fields: dict) -> dict:
+        """Edit ONE signal's full definition and hot-reload the device.
+
+        The client sends only the edited signal (tiny payload); the server merges it
+        into its in-memory signal list, then reuses the validated hot-reload path
+        (full re-validation for overlap/duplicates, atomic register-map swap, CSV
+        persist). ``fields`` may rename the signal. Avoids ever shipping the whole
+        signal list to the browser.
+        """
+        regmap = self._regmap(device_id)
+        if regmap.get_signal(name) is None:
+            raise NotFoundError(f"unknown signal '{name}' on device '{device_id}'")
+        rows = []
+        for s in regmap.signals:
+            row = signal_loader.signal_to_dict(s)
+            if s.name == name:
+                row.update(fields or {})
+            rows.append(row)
+        return self.hot_reload_json(device_id, rows)
+
     def signals_csv(self, device_id: str) -> str:
         regmap = self._regmap(device_id)
         return signal_loader.signals_to_csv(regmap.signals)

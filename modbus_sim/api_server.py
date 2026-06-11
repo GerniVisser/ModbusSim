@@ -215,6 +215,11 @@ def create_app(engine: StateMachine, headless: bool = False) -> Flask:
             raise ValidationError(["body must contain a 'signals' array"])
         return jsonify(engine.hot_reload_json(device_id, body["signals"]))
 
+    @app.post("/api/devices/<device_id>/signals/<signal_name>/update")
+    def update_signal(device_id, signal_name):
+        body = request.get_json(silent=True) or {}
+        return jsonify(engine.update_signal(device_id, signal_name, body))
+
     @app.post("/api/devices/<device_id>/signals/upload")
     def hot_reload_upload(device_id):
         return jsonify(engine.hot_reload_csv(device_id, _file_bytes()))
