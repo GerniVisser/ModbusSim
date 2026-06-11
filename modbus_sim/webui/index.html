@@ -245,6 +245,8 @@
       text-overflow: ellipsis;
       padding-right: 6px;
     }
+    .sig-name-link { cursor: pointer; }
+    .sig-name-link:hover { color: var(--accent); text-decoration: underline; }
     .sig-badge { font-size: .62rem; }
     input.sig-num {
       width: 100%;
@@ -377,7 +379,7 @@
       <div id="rt-toolbar" style="display:none">
         <button class="btn btn-sm btn-success py-0" id="rt-dev-simulate">▶ Simulate</button>
         <button class="btn btn-sm btn-outline-secondary py-0" id="rt-dev-clear">✕ Clear</button>
-        <button class="btn btn-sm btn-outline-primary py-0" id="rt-dev-edit">✎ Edit</button>
+        <span class="text-muted small ms-1 align-self-center" style="font-size:.7rem">Click a variable name to edit it</span>
         <div class="ms-auto d-flex gap-1 flex-wrap">
           <button class="btn btn-sm btn-outline-secondary py-0" id="rt-sim-config" title="Configure time-varying value simulation">⚡ Simulation</button>
           <button class="btn btn-sm btn-outline-secondary py-0" id="rt-simulate-all" title="Simulate all devices">Sim All</button>

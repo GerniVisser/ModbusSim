@@ -303,6 +303,11 @@
       _wireRange(el.querySelector(".sig-hi"), item, "sim_max", el);
     }
     el.querySelector(".sig-motion-btn").onclick = (e) => _openMotion(item, e.currentTarget, el);
+    // Click the variable name to open the full per-variable editor modal.
+    const nameEl = el.querySelector(".sig-name");
+    nameEl.classList.add("sig-name-link");
+    nameEl.title = "Edit variable parameters";
+    nameEl.onclick = () => window.Editor?.open(_selected, item);
     return el;
   }
 
@@ -551,9 +556,8 @@
       await App.postJSON(`/api/devices/${enc(_selected)}/clear`);
       App.toast("Cleared"); _refreshValues();
     };
-    document.getElementById("rt-dev-edit").onclick = () => {
-      if (_selected) window.Editor?.open(_selected, _signals);
-    };
+    // Editing is per-variable now: click a variable's name in the grid (see
+    // _renderSigRow). The old bulk "Edit signals" button is removed from the toolbar.
 
     // Signal filter
     const sf = document.getElementById("rt-filter");
