@@ -208,6 +208,29 @@ def create_app(engine: StateMachine, headless: bool = False) -> Flask:
         body = request.get_json(silent=True) or {}
         return jsonify(engine.set_signal_sim(device_id, signal_name, body))
 
+    # ------------------------------------------ cross-device search / bulk apply
+    @app.get("/api/signals/search")
+    def search_signals():
+        try:
+            limit = int(request.args.get("limit", 1000))
+        except (TypeError, ValueError):
+            limit = 1000
+        return jsonify(engine.search_signals(request.args.get("q", ""), limit))
+
+    @app.post("/api/signals/sim/bulk")
+    def set_signals_sim_bulk():
+        body = request.get_json(silent=True) or {}
+        if "query" not in body:
+            raise ValidationError(["body must contain 'query'"])
+        return jsonify(engine.set_signals_sim_bulk(body["query"], body.get("sim", {})))
+
+    @app.post("/api/signals/value/bulk")
+    def set_signals_value_bulk():
+        body = request.get_json(silent=True) or {}
+        if "query" not in body or "value" not in body:
+            raise ValidationError(["body must contain 'query' and 'value'"])
+        return jsonify(engine.set_signals_value_bulk(body["query"], body["value"]))
+
     @app.post("/api/devices/<device_id>/signals")
     def hot_reload(device_id):
         body = request.get_json(silent=True) or {}

@@ -216,6 +216,36 @@
     }
     #rt-signal-area { flex: 1; min-height: 0; }
 
+    /* All Devices panel (cross-device search + bulk apply) */
+    #rt-all-panel { flex: 1; min-height: 0; display: none; flex-direction: column; }
+    #rt-all-bar {
+      display: flex; gap: 8px; align-items: center;
+      padding: 8px 16px; border-bottom: 1px solid var(--border);
+    }
+    #rt-all-bar input[type="search"] { max-width: 460px; }
+    #rt-all-count {
+      flex-shrink: 0; padding: 5px 16px; font-size: .72rem; color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    #rt-all-col-hdr, .all-row {
+      display: grid;
+      grid-template-columns: minmax(0,1.1fr) minmax(0,1.5fr) 96px 92px 64px 64px 64px;
+      align-items: center;
+      padding: 0 16px;
+    }
+    #rt-all-col-hdr {
+      flex-shrink: 0; height: 28px; border-bottom: 1px solid var(--border);
+      font-size: .68rem; font-weight: 600; letter-spacing: .05em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    #rt-all-results { flex: 1; min-height: 0; }
+    .all-row { border-bottom: 1px solid #1c2128; font-size: .8rem; transition: background .08s; }
+    .all-row:hover { background: #1c2128; }
+    .all-dev, .all-name, .all-type {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 6px;
+    }
+    .all-dev { color: var(--muted); }
+
     /* signal rows */
     .sig-section-hdr {
       display: flex;
@@ -396,6 +426,21 @@
         <div>Signal Name</div><div>Type</div><div>Raw Value</div><div>Low</div><div>High</div><div title="motion">⚡</div><div>Scaled</div><div>Unit</div>
       </div>
       <div id="rt-signal-area"></div>
+
+      <!-- All Devices: cross-device fuzzy search + bulk apply -->
+      <div id="rt-all-panel">
+        <div id="rt-all-bar">
+          <input type="search" id="rt-all-search" class="form-control form-control-sm"
+                 placeholder="🔍  Search variable names across all devices, e.g. active_power"
+                 autocomplete="off">
+          <button class="btn btn-sm btn-primary py-0 ms-auto" id="rt-all-apply" disabled>Bulk apply…</button>
+        </div>
+        <div id="rt-all-count">Type a variable name to search across all devices…</div>
+        <div id="rt-all-col-hdr">
+          <div>Device</div><div>Variable</div><div>Type</div><div>Mode</div><div>Low</div><div>High</div><div>Period</div>
+        </div>
+        <div id="rt-all-results"></div>
+      </div>
     </main>
   </div>
 
@@ -429,6 +474,7 @@
   <script src="/webui/setup.js"></script>
   <script src="/webui/runtime.js"></script>
   <script src="/webui/editor.js"></script>
+  <script src="/webui/alldevices.js"></script>
   <script src="/webui/simulation.js"></script>
   <script src="/webui/zenon_import.js"></script>
 </body>

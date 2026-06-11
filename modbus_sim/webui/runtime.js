@@ -22,6 +22,8 @@
   let _valueTimer = null;
   let _trafficInterface = "";
 
+  const ALL_ID = "__all__";   // sentinel id for the pinned "All Devices" entry
+
   const Runtime = { enter, leave, selectDevice, reloadSelected };
   window.Runtime = Runtime;
 
@@ -40,6 +42,7 @@
     if (sf) sf.style.display = "none";
     const ch = document.getElementById("rt-sig-col-hdr");
     if (ch) ch.style.display = "none";
+    window.AllDevices?.leave();
   }
 
   async function enter() {
@@ -47,7 +50,10 @@
     if (!_devVL) {
       _devVL = new VList(document.getElementById("rt-device-list"), 54, {
         onRender: _syncDevActive,
-        onClick: (item) => { if (item.type === "device") selectDevice(item.id); },
+        onClick: (item) => {
+          if (item.type === "device") selectDevice(item.id);
+          else if (item.type === "all") selectAllDevices();
+        },
       });
     }
     if (!_sigVL) {
@@ -108,12 +114,26 @@
       const sorted = groups.get(vlan).sort((a, b) => a.name.localeCompare(b.name));
       for (const d of sorted) items.push({ type: "device", ...d });
     }
+    // Pin an "All Devices" entry at the very top — always present, regardless of
+    // the device-search filter, so cross-device search/bulk is always reachable.
+    items.unshift({ type: "all" });
     return items;
   }
 
   function _renderDevItem(item) {
     const el = document.createElement("div");
-    if (item.type === "header") {
+    if (item.type === "all") {
+      const total = _devices.reduce((a, d) => a + (d.signal_count || 0), 0);
+      el.className = "dev-item dev-all" + (_selected === ALL_ID ? " active" : "");
+      el.dataset.devAll = "1";
+      el.innerHTML =
+        `<span class="status-dot" style="background:var(--accent)"></span>` +
+        `<div class="dev-info">` +
+        `<div class="dev-name">⊞ All Devices</div>` +
+        `<div class="dev-meta">search &amp; bulk-apply</div>` +
+        `</div>` +
+        `<span class="dev-count">${total}</span>`;
+    } else if (item.type === "header") {
       el.className = "dev-group-hdr";
       el.textContent = item.label;
     } else {
@@ -131,9 +151,12 @@
   }
 
   function _syncDevActive() {
-    document
-      .querySelectorAll("#rt-device-list .dev-item")
-      .forEach((el) => el.classList.toggle("active", el.dataset.devId === _selected));
+    document.querySelectorAll("#rt-device-list .dev-item").forEach((el) => {
+      const active = el.dataset.devAll
+        ? _selected === ALL_ID
+        : el.dataset.devId === _selected;
+      el.classList.toggle("active", active);
+    });
   }
 
   function _wireSearch() {
@@ -159,6 +182,7 @@
   async function selectDevice(id) {
     _selected = id;
     _syncDevActive();
+    window.AllDevices?.leave();   // hide the cross-device panel if it was open
 
     const idx = _devItems.findIndex((x) => x.type === "device" && x.id === id);
     if (idx >= 0) _devVL.scrollTo(idx);
@@ -168,6 +192,7 @@
 
     document.getElementById("rt-toolbar").style.display = "";
     document.getElementById("rt-sig-filter-wrap").style.display = "";
+    document.getElementById("rt-signal-area").style.display = "";
     const colHdr = document.getElementById("rt-sig-col-hdr");
     if (colHdr) colHdr.style.display = "grid";
 
@@ -183,7 +208,30 @@
     await _refreshValues();
   }
 
-  async function reloadSelected() { if (_selected) await selectDevice(_selected); }
+  async function reloadSelected() {
+    if (_selected && _selected !== ALL_ID) await selectDevice(_selected);
+  }
+
+  // ── all-devices (cross-device search / bulk) ───────────────────────────────
+  function selectAllDevices() {
+    _selected = ALL_ID;
+    _syncDevActive();
+
+    document.getElementById("rt-device-header").innerHTML =
+      `<div class="flex-grow-1">` +
+      `<div class="fw-semibold" style="font-size:.95rem">⊞ All Devices</div>` +
+      `<div style="font-size:.72rem;color:var(--muted)">` +
+      `Search a variable name to set a value or simulation across every device at once` +
+      `</div></div>`;
+
+    // Hide the per-device widgets; the all-devices panel takes over the main area.
+    document.getElementById("rt-toolbar").style.display = "none";
+    document.getElementById("rt-sig-filter-wrap").style.display = "none";
+    document.getElementById("rt-sig-col-hdr").style.display = "none";
+    document.getElementById("rt-signal-area").style.display = "none";
+
+    window.AllDevices?.enter();
+  }
 
   function _renderDeviceHeader(d) {
     const iface = d.vlan ? `${_trafficInterface}.${d.vlan}` : _trafficInterface;

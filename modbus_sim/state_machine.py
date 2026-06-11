@@ -462,20 +462,14 @@ class StateMachine:
         result["sim_mode"] = sim_mode
         return result
 
-    def set_signal_sim(self, device_id: str, name: str, fields: dict) -> dict:
-        """Update one signal's per-signal simulation fields in place and apply live.
+    @staticmethod
+    def _apply_sim_fields(signal, fields: dict) -> list[str]:
+        """Merge per-signal sim_* fields into a signal in place; return error strings.
 
-        Lightweight alternative to a full hot reload: mutate the signal's sim_* fields,
-        rebuild only this device's profiles, and rewrite the device CSV so the change
-        survives restart/restore. Accepts any of sim_mode/sim_min/sim_max/sim_period/
-        sim_step; an absent key is left unchanged, an explicit null/"" clears it.
+        Accepts any of sim_mode/sim_min/sim_max/sim_period/sim_step; an absent key is
+        left unchanged, an explicit null/"" clears it. The signal is only mutated for
+        fields that validate (callers should treat a non-empty error list as failure).
         """
-        regmap = self._regmap(device_id)
-        dev = self.config.device_by_id(device_id)
-        signal = regmap.get_signal(name)
-        if dev is None or signal is None:
-            raise NotFoundError(f"unknown signal '{name}' on device '{device_id}'")
-
         fields = fields or {}
         errors: list[str] = []
 
@@ -511,6 +505,22 @@ class StateMachine:
                 errors.append("sim_step must be > 0")
             else:
                 signal.sim_step = st
+        return errors
+
+    def set_signal_sim(self, device_id: str, name: str, fields: dict) -> dict:
+        """Update one signal's per-signal simulation fields in place and apply live.
+
+        Lightweight alternative to a full hot reload: mutate the signal's sim_* fields,
+        rebuild only this device's profiles, and rewrite the device CSV so the change
+        survives restart/restore.
+        """
+        regmap = self._regmap(device_id)
+        dev = self.config.device_by_id(device_id)
+        signal = regmap.get_signal(name)
+        if dev is None or signal is None:
+            raise NotFoundError(f"unknown signal '{name}' on device '{device_id}'")
+
+        errors = self._apply_sim_fields(signal, fields)
         if errors:
             raise ValidationError(errors)
 
@@ -520,6 +530,96 @@ class StateMachine:
             signal_loader.signals_to_csv(regmap.signals), encoding="utf-8"
         )
         return {"ok": True, "signal": signal_loader.signal_to_dict(signal)}
+
+    # ----------------------------------------------- cross-device search / bulk
+    @staticmethod
+    def _match_name(query: str, signal_name: str) -> bool:
+        """Case-insensitive name match: '*' is ignored, whitespace-separated terms
+        are ANDed (every term must be a substring). Empty query matches nothing."""
+        terms = [t for t in query.replace("*", " ").lower().split() if t]
+        if not terms:
+            return False
+        low = signal_name.lower()
+        return all(t in low for t in terms)
+
+    def _iter_matching_signals(self, query: str):
+        """Yield (dev, regmap, signal) for every signal whose name matches `query`,
+        across all devices. Requires RUNNING."""
+        self._require(RUNNING)
+        for dev in self.config.devices:
+            regmap = self._regmaps.get(dev.id)
+            if regmap is None:
+                continue
+            for s in regmap.signals:
+                if self._match_name(query, s.name):
+                    yield dev, regmap, s
+
+    def search_signals(self, query: str, limit: int = 1000) -> dict:
+        """Fuzzy-search signal names across all devices. Returns at most `limit` rows
+        but reports the true total so the UI can warn when results are capped."""
+        matches = []
+        total = 0
+        for dev, _regmap, s in self._iter_matching_signals(query):
+            total += 1
+            if len(matches) < limit:
+                matches.append({
+                    "device_id": dev.id,
+                    "device_name": dev.name,
+                    "name": s.name,
+                    "register_type": s.register_type,
+                    "data_type": s.data_type,
+                    "unit": s.unit,
+                    "sim_mode": s.sim_mode,
+                    "sim_min": s.sim_min,
+                    "sim_max": s.sim_max,
+                    "sim_period": s.sim_period,
+                    "sim_step": s.sim_step,
+                })
+        return {"matches": matches, "total": total, "truncated": total > limit}
+
+    def set_signals_sim_bulk(self, query: str, fields: dict) -> dict:
+        """Apply the same per-signal sim_* fields to every signal matching `query`.
+
+        Validates the shared fields once against a throwaway signal so a bad value
+        fails fast (no partial apply). Then mutates every match, and rebuilds profiles
+        + rewrites the CSV once per affected device."""
+        fields = fields or {}
+        # Validate against a scratch signal so we reject bad input before mutating.
+        scratch = signal_loader.Signal(name="_", register_type="holding", address=0,
+                                        data_type="float32")
+        errors = self._apply_sim_fields(scratch, fields)
+        if errors:
+            raise ValidationError(errors)
+
+        affected: dict[str, tuple] = {}   # device_id -> (dev, regmap)
+        applied = 0
+        for dev, regmap, s in self._iter_matching_signals(query):
+            self._apply_sim_fields(s, fields)   # already validated; cannot error
+            affected[dev.id] = (dev, regmap)
+            applied += 1
+
+        for dev, regmap in affected.values():
+            regmap.rebuild_profiles()
+            (self.project_dir / dev.signals_file).write_text(
+                signal_loader.signals_to_csv(regmap.signals), encoding="utf-8"
+            )
+        return {"ok": True, "applied": applied, "devices": len(affected)}
+
+    def set_signals_value_bulk(self, query: str, value) -> dict:
+        """Write a static raw value to every signal matching `query`. Signals whose
+        type doesn't accept the value are skipped (a single scalar can't fit bools and
+        floats at once). Values are runtime register state, so no CSV is rewritten."""
+        applied = 0
+        skipped = 0
+        for _dev, regmap, s in self._iter_matching_signals(query):
+            try:
+                self._validate_value(s, value)
+            except ValidationError:
+                skipped += 1
+                continue
+            regmap.write_signal(s, value)
+            applied += 1
+        return {"ok": True, "applied": applied, "skipped": skipped}
 
     # --------------------------------------------------------- config / network
     def config_summary(self) -> dict:
