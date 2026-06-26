@@ -98,8 +98,23 @@
           Plug in your USB-to-Ethernet adapter first, then select it here.
         </div>
       </div>
+      <div class="mb-3">
+        <label class="form-label fw-semibold small">VLAN Mode</label>
+        <select class="form-select" id="vlan-mode-select">
+          <option value="auto">Auto — use the VLAN tags in the config (managed-switch setup)</option>
+          <option value="disabled">Disabled — flat IPs, no VLAN tags (single-PC / Host-Only)</option>
+          <option value="enabled">Enabled — force VLAN tags on all devices</option>
+        </select>
+        <div class="form-text" style="color:var(--muted)">
+          Choose <strong>Disabled</strong> when the Modbus client (e.g. Zenon) runs on the
+          same PC over a VMware Host-Only network — VLAN tags can't cross a virtual switch.
+        </div>
+      </div>
       <div id="iface-msg" class="mb-3"></div>
       <button class="btn btn-primary" id="iface-confirm">Confirm &amp; Continue →</button>`;
+
+    const vlanSel = document.getElementById("vlan-mode-select");
+    if (vlanSel && st.vlan_mode) vlanSel.value = st.vlan_mode;
 
     App.getJSON("/api/interfaces").then((r) => {
       const sel = document.getElementById("iface-select");
@@ -118,11 +133,20 @@
         .join("");
     });
 
-    document.getElementById("iface-confirm").onclick = () => {
+    document.getElementById("iface-confirm").onclick = async () => {
       const iface = document.getElementById("iface-select")?.value;
       if (!iface) {
         document.getElementById("iface-msg").innerHTML =
           '<div class="alert alert-warning py-2 small mb-0">Please select an interface to continue.</div>';
+        return;
+      }
+      const mode = document.getElementById("vlan-mode-select")?.value || "auto";
+      const r = await App.postJSON("/api/setup/vlan_mode", { mode });
+      if (!r.ok) {
+        document.getElementById("iface-msg").innerHTML =
+          `<div class="alert alert-danger py-2 small mb-0">${App.escapeHtml(
+            (r.data && (r.data.error || (r.data.errors || []).join(", "))) || "Failed to set VLAN mode"
+          )}</div>`;
         return;
       }
       _ifaceConfirmed = true;

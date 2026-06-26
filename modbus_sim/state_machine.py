@@ -88,6 +88,30 @@ def _rewrite_traffic_interface(config_path: Path, old: str, new: str) -> None:
     config_path.write_text(updated, encoding="utf-8")
 
 
+def _rewrite_vlan_mode(config_path: Path, new_mode: str) -> None:
+    """Set ``network.vlan_mode`` in the YAML file. Replaces the existing value if
+    present, otherwise inserts the key under the ``network:`` block. Uploaded configs
+    may omit vlan_mode entirely (it defaults to ``auto``), so insertion is required."""
+    import re
+    text = config_path.read_text(encoding="utf-8")
+    if re.search(r"^\s*vlan_mode:\s*\S+", text, flags=re.MULTILINE):
+        updated = re.sub(
+            r"(^\s*vlan_mode:\s*)\S+",
+            r"\g<1>" + new_mode,
+            text,
+            flags=re.MULTILINE,
+        )
+    else:
+        updated = re.sub(
+            r"(^network:\s*\n)",
+            r"\g<1>" + f"  vlan_mode: {new_mode}\n",
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    config_path.write_text(updated, encoding="utf-8")
+
+
 class StateMachine:
     def __init__(
         self,
@@ -227,6 +251,8 @@ class StateMachine:
             "config_uploaded": self.config is not None,
             "config_locked": self.config_locked,
             "traffic_interface": self.config.traffic_interface if self.config else "",
+            "vlan_mode": self.config.vlan_mode if self.config else "auto",
+            "vlan_active": self.config.is_vlan_mode if self.config else False,
             "devices_total": total,
             "devices_ready": len(self._signals),
             "devices_pending": pending,
@@ -234,6 +260,23 @@ class StateMachine:
             "can_start": self.config is not None and not pending,
             "start_error": self.start_error,
         }
+
+    def set_vlan_mode(self, mode: str) -> dict:
+        """Override ``network.vlan_mode`` before the simulation starts. SETUP-only:
+        once running the network is already built, so changing it would have no effect.
+        ``disabled`` is the single-PC / Host-Only choice — it assigns flat IP aliases
+        instead of 802.1Q subinterfaces, so a Modbus client on the same host (e.g. Zenon
+        over a VMware Host-Only NIC) can reach every device without VLAN-aware hardware."""
+        self._require(SETUP)
+        if self.config is None:
+            raise StateError("config not uploaded yet", self.state)
+        if mode not in config_loader.VALID_VLAN_MODES:
+            raise ValidationError(
+                [f"vlan_mode must be one of {config_loader.VALID_VLAN_MODES} (got {mode!r})"]
+            )
+        self.config.vlan_mode = mode
+        _rewrite_vlan_mode(self.project_dir / CONFIG_FILENAME, mode)
+        return {"ok": True, "vlan_mode": mode, "vlan_active": self.config.is_vlan_mode}
 
     # --------------------------------------------------------- start transition
     def start(self) -> dict:

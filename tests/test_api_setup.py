@@ -85,3 +85,63 @@ def test_full_start_transition_and_setup_locked_out(tmp_path):
         assert devices[0]["signal_count"] == 8
     finally:
         engine.stop()
+
+
+def _vlan_device_config(port):
+    """Config with VLAN tags present, so auto-mode would enable VLAN mode."""
+    return make_config_yaml(
+        [{"id": "dev1", "ip": "10.4.1.10", "port": port, "unit_id": 1, "vlan": 100}],
+        vlan_mode="auto",
+    )
+
+
+def test_set_vlan_mode_disabled_updates_status_and_file(tmp_path):
+    engine, client = make_engine(tmp_path)
+    upload_file(client, "/api/setup/config", _vlan_device_config(5050), "sim_config.yaml")
+    # auto + a device VLAN -> VLAN mode would be active
+    assert client.get("/api/setup/status").get_json()["vlan_active"] is True
+
+    resp = client.post("/api/setup/vlan_mode", json={"mode": "disabled"})
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True, "vlan_mode": "disabled", "vlan_active": False}
+
+    status = client.get("/api/setup/status").get_json()
+    assert status["vlan_mode"] == "disabled"
+    assert status["vlan_active"] is False
+    # Persisted to the on-disk config the engine starts from.
+    assert "vlan_mode: disabled" in (tmp_path / "sim_config.yaml").read_text()
+
+
+def test_set_vlan_mode_inserts_key_when_missing(tmp_path):
+    engine, client = make_engine(tmp_path)
+    # A config that omits vlan_mode entirely (defaults to auto).
+    yaml = (
+        "project:\n  name: P\n"
+        "network:\n  traffic_interface: lo\n"
+        "devices:\n  - id: dev1\n    name: dev1\n    ip: 127.0.0.1\n"
+        "    port: 5051\n    unit_id: 1\n    signals_file: devices/dev1.csv\n"
+    )
+    upload_file(client, "/api/setup/config", yaml, "sim_config.yaml")
+
+    resp = client.post("/api/setup/vlan_mode", json={"mode": "disabled"})
+    assert resp.status_code == 200
+    assert "vlan_mode: disabled" in (tmp_path / "sim_config.yaml").read_text()
+
+
+def test_set_vlan_mode_rejects_invalid(tmp_path):
+    _, client = make_engine(tmp_path)
+    upload_file(client, "/api/setup/config", _single_device_config(5052), "sim_config.yaml")
+    resp = client.post("/api/setup/vlan_mode", json={"mode": "bogus"})
+    assert resp.status_code == 400
+
+
+def test_set_vlan_mode_rejected_after_start(tmp_path):
+    engine, client = make_engine(tmp_path)
+    try:
+        upload_file(client, "/api/setup/config", _single_device_config(5053), "sim_config.yaml")
+        upload_file(client, "/api/setup/signals/dev1", SAMPLE_SIGNALS, "dev1.csv")
+        client.post("/api/setup/start")
+        resp = client.post("/api/setup/vlan_mode", json={"mode": "disabled"})
+        assert resp.status_code == 409
+    finally:
+        engine.stop()

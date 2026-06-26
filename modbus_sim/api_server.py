@@ -145,6 +145,11 @@ def create_app(engine: StateMachine, headless: bool = False) -> Flask:
     def setup_status():
         return jsonify(engine.setup_status())
 
+    @app.post("/api/setup/vlan_mode")
+    def setup_vlan_mode():
+        body = request.get_json(silent=True) or {}
+        return jsonify(engine.set_vlan_mode((body.get("mode") or "").strip()))
+
     @app.post("/api/setup/start")
     def setup_start():
         return jsonify(engine.start())
