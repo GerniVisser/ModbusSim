@@ -193,6 +193,36 @@ def test_generate_creates_config_and_signals(tmp_path):
     assert resp["ready_to_start"] is True
 
 
+def test_generate_maps_hwobjecttype_to_register_type(tmp_path):
+    import csv as _csv
+
+    eng, client = make_engine(tmp_path)
+
+    data = _csv_file(
+        _row(VariableName="Heartbeat", HWObjectType="8", TypeName="REAL",
+             NetAddr="7", Offset="40001"),
+        _row(VariableName="Total_current", HWObjectType="64", TypeName="UDINT",
+             NetAddr="7", Offset="7030"),
+    )
+    _upload(client, "/api/import/zenon/parse", data)
+
+    r = client.post("/api/import/zenon/generate", json={
+        "project_name": "Test Plant",
+        "traffic_interface": "eth1",
+        "drivers": [{
+            "driver_name": "Modbus Energy Driver 2", "net_addr": 7,
+            "unit_id": 1, "id": "driver2_n7", "name": "Driver 2",
+            "ip": "10.4.1.7", "word_order": "little_endian",
+        }],
+    })
+    assert r.status_code == 200
+
+    csv_text = (eng.project_dir / "devices" / "driver2_n7.csv").read_text()
+    by_name = {row["name"]: row for row in _csv.DictReader(io.StringIO(csv_text))}
+    assert by_name["Heartbeat"]["register_type"] == "holding"
+    assert by_name["Total_current"]["register_type"] == "input"
+
+
 def test_generate_locks_config_and_uploads_signals(tmp_path):
     _, client = make_engine(tmp_path)
     data = _csv_file(_row(VariableName="Sig1", TypeName="UINT", NetAddr="7", Offset="1000"))

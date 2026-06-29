@@ -44,12 +44,18 @@ TYPE_MAP: dict[str, str] = {
 # Types that occupy 2 registers and require word_order in the signal CSV.
 WIDE_TYPES = frozenset({"uint32", "int32", "float32"})
 
+# Zenon HWObjectType → Modbus register area. Values outside this map fall back
+# to "holding" (Modbus Energy exports only use 8 and 64 in practice).
+HWOBJECT_TYPE_MAP: dict[int, str] = {8: "holding", 64: "input"}
+DEFAULT_REGISTER_TYPE = "holding"
+
 
 @dataclass
 class ParsedSignal:
     name: str
     address: int
     data_type: str
+    register_type: str     # holding / input — derived from Zenon HWObjectType
     bit_index: int | None  # None for non-bool; 0-15 for bool in holding register
     unit: str
     description: str
@@ -129,6 +135,9 @@ def parse_file(file_bytes: bytes) -> tuple[list[ParsedDevice], int, dict[str, in
             skipped += 1
             continue
 
+        hw_obj = _parse_int(row.get("HWObjectType"))
+        register_type = HWOBJECT_TYPE_MAP.get(hw_obj, DEFAULT_REGISTER_TYPE)
+
         bit_index: int | None = None
         if data_type == "bool":
             bit_index = _parse_int(row.get("BitAddr")) or 0
@@ -153,6 +162,7 @@ def parse_file(file_bytes: bytes) -> tuple[list[ParsedDevice], int, dict[str, in
                 name=name,
                 address=address,
                 data_type=data_type,
+                register_type=register_type,
                 bit_index=bit_index,
                 unit=unit_str,
                 description=description,
@@ -196,7 +206,7 @@ def generate_signal_csv(
         writer.writerow(
             [
                 sig.name,
-                "holding",
+                sig.register_type,
                 sig.address,
                 sig.data_type,
                 bi,

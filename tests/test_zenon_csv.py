@@ -322,6 +322,30 @@ def test_generate_csv_columns():
     assert r["word_order"] == ""
 
 
+def test_register_type_input_from_hwobjecttype_64():
+    row = _make_row(VariableName="Total_current", HWObjectType="64", TypeName="UDINT", Offset="7030")
+    devices, _, _dtc, _cols = parse_file(_make_csv(row))
+    csv_text = generate_signal_csv(devices[0])
+    r = next(csv.DictReader(io.StringIO(csv_text)))
+    assert r["register_type"] == "input"
+
+
+def test_register_type_holding_from_hwobjecttype_8():
+    row = _make_row(VariableName="Heartbeat", HWObjectType="8", TypeName="REAL", Offset="40001")
+    devices, _, _dtc, _cols = parse_file(_make_csv(row))
+    csv_text = generate_signal_csv(devices[0])
+    r = next(csv.DictReader(io.StringIO(csv_text)))
+    assert r["register_type"] == "holding"
+
+
+def test_register_type_unknown_hwobjecttype_defaults_to_holding():
+    row = _make_row(VariableName="Mystery", HWObjectType="99", TypeName="UINT", Offset="500")
+    devices, _, _dtc, _cols = parse_file(_make_csv(row))
+    csv_text = generate_signal_csv(devices[0])
+    r = next(csv.DictReader(io.StringIO(csv_text)))
+    assert r["register_type"] == "holding"
+
+
 def test_generate_csv_wide_type_word_order():
     row = _make_row(VariableName="Power", TypeName="UDINT", Offset="2000")
     devices, _, _dtc, _cols = parse_file(_make_csv(row))
